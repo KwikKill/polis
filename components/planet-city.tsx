@@ -10,15 +10,17 @@ import type { Building, PlanetCity as PlanetCityData } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
 
-// A city, unmodified, "stuck" onto a point on the planet's surface — its
-// local origin sits at unitVector*radius, and the wrapping group is
-// rotated so local +Y matches the outward normal there. BuildingField only
-// ever reasons in each building's local x/z, so it works nested inside an
-// arbitrarily positioned/rotated group without any changes of its own.
-// Buildings themselves stay flat (small, mostly-vertical, the mismatch
-// isn't visually significant) — Ground's `curvature` prop pulls the wide
-// flat ground disc onto the sphere's true surface instead, which is where
-// the flat-tangent-plane approximation actually showed as a visible gap.
+// A city, "stuck" onto a point on the planet's surface — its local origin
+// sits at unitVector*radius, and the wrapping group is rotated so local +Y
+// matches the outward normal there. Both BuildingField and Ground get the
+// same `curvature` (this city's own normal/quaternion/radius), so every
+// wall, road, sidewalk, vehicle and streetlight is individually pulled onto
+// the sphere's true surface and tilted to stand normal to it there, instead
+// of all inheriting one flat tangent-plane orientation shared by the whole
+// city — at real planet scale a big city's own extent is no longer
+// negligible next to the planet's radius, so that flat approximation showed
+// up as buildings/roads visibly floating off the surface near a city's
+// edge, not just the ground disc beneath them.
 export default function PlanetCity({
   city,
   radius,
@@ -53,6 +55,7 @@ export default function PlanetCity({
             ? () => {}
             : (b) => window.open(b.htmlUrl, '_blank', 'noopener,noreferrer')
         }
+        curvature={{ normal, quaternion, planetRadius: radius }}
       />
       <Ground
         roads={city.roads}

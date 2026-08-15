@@ -1,5 +1,17 @@
 import * as THREE from 'three'
 
+const UP = new THREE.Vector3(0, 1, 0)
+
+// The three pieces every curved-surface consumer needs: which way is
+// "outward" at the sticker's contact point, the sticker group's own
+// orientation, and the sphere's current radius. Shared across Ground,
+// BuildingField and PlanetFeatures rather than each declaring its own copy.
+export interface SurfaceCurvature {
+  normal: THREE.Vector3
+  quaternion: THREE.Quaternion
+  planetRadius: number
+}
+
 // Given a point in a tangent plane's local coordinates (the same local
 // space used inside a <group position={normal*radius}
 // quaternion={Quaternion.setFromUnitVectors(UP, normal)}> wrapper), return
@@ -23,6 +35,46 @@ export function curveLocalPoint(
   const flatWorld = tangentPoint.clone().add(flatOffset)
   const curvedWorld = flatWorld.normalize().multiplyScalar(planetRadius)
   return curvedWorld.sub(tangentPoint).applyQuaternion(quaternion.clone().invert())
+}
+
+// The per-instance analogue of curveLocalPoint, for InstancedMesh "dummy"
+// placement (position + a tilt quaternion) instead of raw geometry
+// vertices — used for props scattered across a city's footprint (building
+// walls, trim, windows, roof clutter, roads, sidewalks, vehicles,
+// streetlights) that each need their *own* corrected position and
+// "standing up straight" orientation, not just the single shared
+// tangent-plane quaternion the whole city group uses. Without this, a prop
+// out near a large city's edge both floats off the true surface (the same
+// gap curveLocalPoint fixes for the ground disc) *and* stands tilted at
+// the city-center's normal instead of its own — most visible for the
+// biggest cities, where extent is no longer negligible next to the
+// planet's radius.
+export interface CurvedPlacement {
+  position: THREE.Vector3
+  tiltQuaternion: THREE.Quaternion
+}
+
+export function curvedLocalPlacement(
+  x: number,
+  y: number,
+  z: number,
+  normal: THREE.Vector3,
+  planetRadius: number,
+  quaternion: THREE.Quaternion,
+): CurvedPlacement {
+  const tangentPoint = normal.clone().multiplyScalar(planetRadius)
+  const flatOffset = new THREE.Vector3(x, 0, z).applyQuaternion(quaternion)
+  const flatWorld = tangentPoint.clone().add(flatOffset)
+  const worldUp = flatWorld.clone().normalize()
+  const curvedWorld = worldUp.clone().multiplyScalar(planetRadius)
+  const inverseQuaternion = quaternion.clone().invert()
+
+  const localBase = curvedWorld.clone().sub(tangentPoint).applyQuaternion(inverseQuaternion)
+  const localUp = worldUp.applyQuaternion(inverseQuaternion)
+  const tiltQuaternion = new THREE.Quaternion().setFromUnitVectors(UP, localUp)
+  const position = localBase.addScaledVector(localUp, y)
+
+  return { position, tiltQuaternion }
 }
 
 // A disc built from curved vertices instead of CircleGeometry's flat ones

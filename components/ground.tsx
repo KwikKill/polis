@@ -3,14 +3,8 @@
 import { MeshReflectorMaterial } from '@react-three/drei'
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { buildCurvedDiscGeometry } from '@/lib/sphere-curve'
+import { buildCurvedDiscGeometry, curvedLocalPlacement, type SurfaceCurvature } from '@/lib/sphere-curve'
 import type { Road } from '@/lib/types'
-
-export interface GroundCurvature {
-  normal: THREE.Vector3
-  quaternion: THREE.Quaternion
-  planetRadius: number
-}
 
 const MAX_STREETLIGHTS = 60
 const MIN_ROAD_LENGTH_FOR_LIGHT = 1.5
@@ -43,9 +37,22 @@ interface Vehicle extends Point {
   color: string
 }
 
-function Streetlight({ x, z }: Point) {
+function Streetlight({ x, z, curvature }: Point & { curvature?: SurfaceCurvature }) {
+  const { position, quaternion } = useMemo(() => {
+    if (!curvature) return { position: new THREE.Vector3(x, 0, z), quaternion: undefined }
+    const { position: p, tiltQuaternion } = curvedLocalPlacement(
+      x,
+      0,
+      z,
+      curvature.normal,
+      curvature.planetRadius,
+      curvature.quaternion,
+    )
+    return { position: p, quaternion: tiltQuaternion }
+  }, [x, z, curvature])
+
   return (
-    <group position={[x, 0, z]}>
+    <group position={position} quaternion={quaternion}>
       <mesh position={[0, 1.1, 0]}>
         <cylinderGeometry args={[0.04, 0.05, 2.2, 6]} />
         <meshBasicMaterial color="#1a1024" toneMapped={false} />
@@ -124,9 +131,44 @@ function shuffleAndCap<T>(items: T[], max: number): T[] {
   return items.slice(0, max)
 }
 
+const Y_AXIS = new THREE.Vector3(0, 1, 0)
+const yawScratch = new THREE.Quaternion()
+
+// Shared by every instanced prop below: without curvature, place/yaw it
+// exactly as before (zero-diff for the flat /u/[username] page). With it,
+// look up that instance's *own* corrected surface point and "standing up
+// straight" direction (curvedLocalPlacement) instead of the whole city's
+// single shared tangent-plane orientation — a prop out near a large city's
+// edge otherwise both floats off the true sphere and stands tilted to the
+// city center's normal rather than its own.
+function placeDummy(
+  dummy: THREE.Object3D,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  curvature: SurfaceCurvature | undefined,
+) {
+  if (curvature) {
+    const { position, tiltQuaternion } = curvedLocalPlacement(
+      x,
+      y,
+      z,
+      curvature.normal,
+      curvature.planetRadius,
+      curvature.quaternion,
+    )
+    dummy.position.copy(position)
+    dummy.quaternion.copy(tiltQuaternion).multiply(yawScratch.setFromAxisAngle(Y_AXIS, yaw))
+  } else {
+    dummy.position.set(x, y, z)
+    dummy.rotation.set(0, yaw, 0)
+  }
+}
+
 // One instanced segment per road, oriented flat along the ground between
 // its two endpoints.
-function RoadField({ roads }: { roads: Road[] }) {
+function RoadField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCurvature }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
 
   useLayoutEffect(() => {
@@ -136,14 +178,13 @@ function RoadField({ roads }: { roads: Road[] }) {
       const dx = r.x2 - r.x1
       const dz = r.z2 - r.z1
       const length = Math.hypot(dx, dz)
-      dummy.position.set((r.x1 + r.x2) / 2, ROAD_Y, (r.z1 + r.z2) / 2)
-      dummy.rotation.set(0, Math.atan2(dx, dz), 0)
+      placeDummy(dummy, (r.x1 + r.x2) / 2, ROAD_Y, (r.z1 + r.z2) / 2, Math.atan2(dx, dz), curvature)
       dummy.scale.set(ROAD_WIDTH, ROAD_HEIGHT, length)
       dummy.updateMatrix()
       mesh.current.setMatrixAt(i, dummy.matrix)
     })
     mesh.current.instanceMatrix.needsUpdate = true
-  }, [roads])
+  }, [roads, curvature])
 
   if (roads.length === 0) return null
 
@@ -157,7 +198,7 @@ function RoadField({ roads }: { roads: Road[] }) {
 
 // A shoulder strip on each side of every road — the difference between "a
 // coloured line" and "a street with a curb," cheap detail around the roads.
-function SidewalkField({ roads }: { roads: Road[] }) {
+function SidewalkField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCurvature }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
   const count = roads.length * 2
 
@@ -180,8 +221,7 @@ function SidewalkField({ roads }: { roads: Road[] }) {
       const mz = (r.z1 + r.z2) / 2
 
       for (const side of [1, -1]) {
-        dummy.position.set(mx + px * offset * side, SIDEWALK_Y, mz + pz * offset * side)
-        dummy.rotation.set(0, angle, 0)
+        placeDummy(dummy, mx + px * offset * side, SIDEWALK_Y, mz + pz * offset * side, angle, curvature)
         dummy.scale.set(SIDEWALK_WIDTH, SIDEWALK_HEIGHT, length)
         dummy.updateMatrix()
         mesh.current.setMatrixAt(idx, dummy.matrix)
@@ -189,7 +229,7 @@ function SidewalkField({ roads }: { roads: Road[] }) {
       }
     })
     mesh.current.instanceMatrix.needsUpdate = true
-  }, [roads])
+  }, [roads, curvature])
 
   if (roads.length === 0) return null
 
@@ -201,7 +241,7 @@ function SidewalkField({ roads }: { roads: Road[] }) {
   )
 }
 
-function VehicleField({ vehicles }: { vehicles: Vehicle[] }) {
+function VehicleField({ vehicles, curvature }: { vehicles: Vehicle[]; curvature?: SurfaceCurvature }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
 
   useLayoutEffect(() => {
@@ -209,8 +249,7 @@ function VehicleField({ vehicles }: { vehicles: Vehicle[] }) {
     const dummy = new THREE.Object3D()
     const color = new THREE.Color()
     vehicles.forEach((v, i) => {
-      dummy.position.set(v.x, VEHICLE_SIZE[1] / 2 + 0.02, v.z)
-      dummy.rotation.set(0, v.angle, 0)
+      placeDummy(dummy, v.x, VEHICLE_SIZE[1] / 2 + 0.02, v.z, v.angle, curvature)
       dummy.scale.set(...VEHICLE_SIZE)
       dummy.updateMatrix()
       mesh.current.setMatrixAt(i, dummy.matrix)
@@ -218,7 +257,7 @@ function VehicleField({ vehicles }: { vehicles: Vehicle[] }) {
     })
     mesh.current.instanceMatrix.needsUpdate = true
     if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true
-  }, [vehicles])
+  }, [vehicles, curvature])
 
   if (vehicles.length === 0) return null
 
@@ -257,7 +296,7 @@ export default function Ground({
   roads: Road[]
   reflective?: boolean
   groundRadius?: number
-  curvature?: GroundCurvature
+  curvature?: SurfaceCurvature
 }) {
   const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
   const vehicles = useMemo(() => vehiclesAlongRoads(roads), [roads])
@@ -301,12 +340,12 @@ export default function Ground({
         </mesh>
       )}
 
-      <SidewalkField roads={roads} />
-      <RoadField roads={roads} />
-      <VehicleField vehicles={vehicles} />
+      <SidewalkField roads={roads} curvature={curvature} />
+      <RoadField roads={roads} curvature={curvature} />
+      <VehicleField vehicles={vehicles} curvature={curvature} />
 
       {streetlights.map((l, i) => (
-        <Streetlight key={i} x={l.x} z={l.z} />
+        <Streetlight key={i} x={l.x} z={l.z} curvature={curvature} />
       ))}
     </group>
   )

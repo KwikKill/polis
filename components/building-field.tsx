@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { curvedLocalPlacement, type SurfaceCurvature } from '@/lib/sphere-curve'
 import type { Building } from '@/lib/types'
 
 const FORK_CAP_HEIGHT = 0.4
@@ -23,6 +24,45 @@ interface BuildingFieldProps {
   buildings: Building[]
   onHover: (building: Building | null) => void
   onSelect: (building: Building) => void
+  curvature?: SurfaceCurvature
+}
+
+const Y_AXIS = new THREE.Vector3(0, 1, 0)
+const yawScratch = new THREE.Quaternion()
+
+// Every instance below is placed via this instead of a raw
+// dummy.position.set/dummy.rotation.set pair: without curvature it's
+// exactly that (zero-diff for the flat /u/[username] page). With it, each
+// individual wall/trim bar/window/roof prop/tier gets *its own* corrected
+// surface point and "standing up straight" tilt (curvedLocalPlacement)
+// rather than inheriting one shared orientation from the city's own
+// tangent-plane group — at real planet scale a big city's buildings
+// otherwise both float off the true sphere near the city's edge and all
+// lean at the same angle instead of each standing normal to the surface
+// under it.
+function placeDummy(
+  dummy: THREE.Object3D,
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  curvature: SurfaceCurvature | undefined,
+) {
+  if (curvature) {
+    const { position, tiltQuaternion } = curvedLocalPlacement(
+      x,
+      y,
+      z,
+      curvature.normal,
+      curvature.planetRadius,
+      curvature.quaternion,
+    )
+    dummy.position.copy(position)
+    dummy.quaternion.copy(tiltQuaternion).multiply(yawScratch.setFromAxisAngle(Y_AXIS, yaw))
+  } else {
+    dummy.position.set(x, y, z)
+    dummy.rotation.set(0, yaw, 0)
+  }
 }
 
 interface WindowInstance {
@@ -181,7 +221,29 @@ function buildTiers(buildings: Building[]): Tier[] {
   return tiers
 }
 
-export default function BuildingField({ buildings, onHover, onSelect }: BuildingFieldProps) {
+function LandmarkBeacon({ building: b, curvature }: { building: Building; curvature?: SurfaceCurvature }) {
+  const { position, quaternion } = useMemo(() => {
+    if (!curvature) return { position: new THREE.Vector3(b.x, b.height + 6, b.z), quaternion: undefined }
+    const { position: p, tiltQuaternion } = curvedLocalPlacement(
+      b.x,
+      b.height + 6,
+      b.z,
+      curvature.normal,
+      curvature.planetRadius,
+      curvature.quaternion,
+    )
+    return { position: p, quaternion: tiltQuaternion }
+  }, [b.x, b.z, b.height, curvature])
+
+  return (
+    <mesh position={position} quaternion={quaternion}>
+      <cylinderGeometry args={[0.04, 0.04, 12, 6]} />
+      <meshBasicMaterial color={b.color} toneMapped={false} transparent opacity={0.55} />
+    </mesh>
+  )
+}
+
+export default function BuildingField({ buildings, onHover, onSelect, curvature }: BuildingFieldProps) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
   const forkMesh = useRef<THREE.InstancedMesh>(null!)
   const trimMesh = useRef<THREE.InstancedMesh>(null!)
@@ -200,28 +262,27 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     if (!mesh.current) return
     const dummy = new THREE.Object3D()
     buildings.forEach((b, i) => {
-      dummy.position.set(b.x, b.height / 2, b.z)
+      placeDummy(dummy, b.x, b.height / 2, b.z, 0, curvature)
       dummy.scale.set(b.width, b.height, b.depth)
-      dummy.rotation.set(0, 0, 0)
       dummy.updateMatrix()
       mesh.current.setMatrixAt(i, dummy.matrix)
       mesh.current.setColorAt(i, bodyColor(b))
     })
     mesh.current.instanceMatrix.needsUpdate = true
     if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true
-  }, [buildings])
+  }, [buildings, curvature])
 
   useLayoutEffect(() => {
     if (!forkMesh.current || forks.length === 0) return
     const dummy = new THREE.Object3D()
     forks.forEach((b, i) => {
-      dummy.position.set(b.x, b.height + FORK_CAP_HEIGHT / 2, b.z)
+      placeDummy(dummy, b.x, b.height + FORK_CAP_HEIGHT / 2, b.z, 0, curvature)
       dummy.scale.set(b.width * 0.55, FORK_CAP_HEIGHT, b.depth * 0.55)
       dummy.updateMatrix()
       forkMesh.current.setMatrixAt(i, dummy.matrix)
     })
     forkMesh.current.instanceMatrix.needsUpdate = true
-  }, [forks])
+  }, [forks, curvature])
 
   // Four thin glowing corner bars per building — the actual Tron-style
   // "glowing edges on a dark volume" look; the body color alone (however
@@ -239,11 +300,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     buildings.forEach((b) => {
       const color = trimColor(b)
       corners.forEach(([cx, cz]) => {
-        dummy.position.set(
-          b.x + (cx * b.width) / 2,
-          b.height / 2,
-          b.z + (cz * b.depth) / 2,
-        )
+        placeDummy(dummy, b.x + (cx * b.width) / 2, b.height / 2, b.z + (cz * b.depth) / 2, 0, curvature)
         dummy.scale.set(EDGE_TRIM, b.height, EDGE_TRIM)
         dummy.updateMatrix()
         trimMesh.current.setMatrixAt(idx, dummy.matrix)
@@ -253,38 +310,37 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     })
     trimMesh.current.instanceMatrix.needsUpdate = true
     if (trimMesh.current.instanceColor) trimMesh.current.instanceColor.needsUpdate = true
-  }, [buildings])
+  }, [buildings, curvature])
 
   useLayoutEffect(() => {
     if (!windowMesh.current || windows.length === 0) return
     const dummy = new THREE.Object3D()
     windows.forEach((w, i) => {
-      dummy.position.set(w.x, w.y, w.z)
-      dummy.rotation.set(0, w.rotationY, 0)
+      placeDummy(dummy, w.x, w.y, w.z, w.rotationY, curvature)
       dummy.scale.set(WINDOW_WIDTH, WINDOW_HEIGHT, 1)
       dummy.updateMatrix()
       windowMesh.current.setMatrixAt(i, dummy.matrix)
     })
     windowMesh.current.instanceMatrix.needsUpdate = true
-  }, [windows])
+  }, [windows, curvature])
 
   useLayoutEffect(() => {
     if (!roofPropMesh.current || roofProps.length === 0) return
     const dummy = new THREE.Object3D()
     roofProps.forEach((p, i) => {
-      dummy.position.set(p.x, p.y, p.z)
+      placeDummy(dummy, p.x, p.y, p.z, 0, curvature)
       dummy.scale.set(p.sx, p.sy, p.sz)
       dummy.updateMatrix()
       roofPropMesh.current.setMatrixAt(i, dummy.matrix)
     })
     roofPropMesh.current.instanceMatrix.needsUpdate = true
-  }, [roofProps])
+  }, [roofProps, curvature])
 
   useLayoutEffect(() => {
     if (!tierMesh.current || tiers.length === 0) return
     const dummy = new THREE.Object3D()
     tiers.forEach((t, i) => {
-      dummy.position.set(t.x, t.y, t.z)
+      placeDummy(dummy, t.x, t.y, t.z, 0, curvature)
       dummy.scale.set(t.width, t.height, t.depth)
       dummy.updateMatrix()
       tierMesh.current.setMatrixAt(i, dummy.matrix)
@@ -292,7 +348,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     })
     tierMesh.current.instanceMatrix.needsUpdate = true
     if (tierMesh.current.instanceColor) tierMesh.current.instanceColor.needsUpdate = true
-  }, [tiers])
+  }, [tiers, curvature])
 
   return (
     <>
@@ -348,10 +404,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
 
       {/* Rooftop beacons on the top-starred repos — cheap, low count, not instanced. */}
       {landmarks.map((b) => (
-        <mesh key={b.repoName} position={[b.x, b.height + 6, b.z]}>
-          <cylinderGeometry args={[0.04, 0.04, 12, 6]} />
-          <meshBasicMaterial color={b.color} toneMapped={false} transparent opacity={0.55} />
-        </mesh>
+        <LandmarkBeacon key={b.repoName} building={b} curvature={curvature} />
       ))}
     </>
   )
