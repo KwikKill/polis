@@ -1,10 +1,10 @@
 'use client'
 
-import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
+import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useRouter } from 'next/navigation'
-import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
-import * as THREE from 'three'
+import { useMemo, useState, useTransition } from 'react'
 import CitySky from '@/components/city-sky'
 import Footer from '@/components/footer'
 import PlanetCity from '@/components/planet-city'
@@ -15,120 +15,6 @@ import { cityExtent } from '@/lib/city-builder'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { relocateCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
-
-const UP = new THREE.Vector3(0, 1, 0)
-const AZIMUTH_SPEED = 0.006
-const POLAR_SPEED = 0.006
-// "An offset so we only ever see one pole" is polar-angle clamping: this
-// keeps the point the camera is anchored near within a band around the
-// north pole, so azimuth (unclamped, full rotation) scrolls
-// parallels/longitude and polar angle (clamped) scrolls meridians/latitude
-// without ever crossing the equator into the far hemisphere.
-const MIN_POLAR_ANGLE = 0.12 // ~7deg off dead-on-top — avoids a perfectly flat top-down view
-const MAX_POLAR_ANGLE = 1.3 // ~74.5deg — stays well clear of the equator/far pole
-const INITIAL_POLAR_ANGLE = 0.25
-// The camera's offset from its anchor point, in that point's own local
-// tangent frame — the same [42, 34, 42]/[0, 4, 0] framing city-scene.tsx
-// and every earlier round of this feature used from a city's own origin.
-// This is what keeps things at building scale: an OrbitControls-style
-// camera aimed at the sphere's true *center* from this same close range
-// was tried first and was a real bug, not just an aesthetic miss — from
-// only ~40 units off a ~200-unit-radius surface, the sphere's apparent
-// angular size vastly exceeds the 45deg FOV, so the entire screen fills
-// with the sphere's own flat, unlit color and reads as a blank void.
-// Anchoring the camera to a point on the surface like any other sticker
-// (same tangent-plane technique as PlanetCity/PlanetFeatures) sidesteps
-// that entirely, and also guarantees a level horizon for free: the
-// camera's `up` is set to that point's own true outward normal every
-// frame, so it can never end up tilted regardless of how far azimuth or
-// polar angle have been dragged — unlike an earlier version that instead
-// rotated the *planet* under a fixed camera via hand-rolled nested Euler
-// angles, where the pitch axis silently rotated together with yaw and the
-// horizon visibly tilted the moment both had been dragged at all.
-const CAMERA_OFFSET = new THREE.Vector3(42, 34, 42)
-const TARGET_OFFSET = new THREE.Vector3(0, 4, 0)
-const MIN_ZOOM = 0.45
-const MAX_ZOOM = 2.2
-const ZOOM_SPEED = 0.0012
-
-// Lives inside the Canvas (needs useThree/useFrame) and owns the camera
-// directly — drag to orbit (azimuth/polar angle around the sphere), wheel
-// to zoom (scales the local offset, not the underlying spherical
-// coordinates). Recomputes camera position/up/lookAt from scratch every
-// frame from plain (azimuth, polarAngle, zoom) numbers in a ref, the same
-// "recompute, don't accumulate transforms" approach OrbitControls itself
-// uses internally — cheap, and avoids any chance of the state drifting.
-function PlanetCamera({ radius }: { radius: number }) {
-  const { camera, gl } = useThree()
-  const state = useRef({ azimuth: 0, polar: INITIAL_POLAR_ANGLE, zoom: 1 })
-
-  useEffect(() => {
-    const dom = gl.domElement
-    const drag = { active: false, lastX: 0, lastY: 0 }
-
-    function onPointerDown(e: PointerEvent) {
-      if (e.button !== 0) return
-      drag.active = true
-      drag.lastX = e.clientX
-      drag.lastY = e.clientY
-    }
-
-    function onPointerMove(e: PointerEvent) {
-      if (!drag.active) return
-      const dx = e.clientX - drag.lastX
-      const dy = e.clientY - drag.lastY
-      drag.lastX = e.clientX
-      drag.lastY = e.clientY
-      state.current.azimuth += dx * AZIMUTH_SPEED
-      state.current.polar = Math.max(
-        MIN_POLAR_ANGLE,
-        Math.min(MAX_POLAR_ANGLE, state.current.polar + dy * POLAR_SPEED),
-      )
-    }
-
-    function onPointerUp() {
-      drag.active = false
-    }
-
-    function onWheel(e: WheelEvent) {
-      e.preventDefault()
-      state.current.zoom = Math.max(
-        MIN_ZOOM,
-        Math.min(MAX_ZOOM, state.current.zoom + e.deltaY * ZOOM_SPEED),
-      )
-    }
-
-    dom.addEventListener('pointerdown', onPointerDown)
-    window.addEventListener('pointermove', onPointerMove)
-    window.addEventListener('pointerup', onPointerUp)
-    dom.addEventListener('wheel', onWheel, { passive: false })
-    return () => {
-      dom.removeEventListener('pointerdown', onPointerDown)
-      window.removeEventListener('pointermove', onPointerMove)
-      window.removeEventListener('pointerup', onPointerUp)
-      dom.removeEventListener('wheel', onWheel)
-    }
-  }, [gl])
-
-  useFrame(() => {
-    const { azimuth, polar, zoom } = state.current
-    const normal = new THREE.Vector3(
-      Math.sin(polar) * Math.cos(azimuth),
-      Math.cos(polar),
-      Math.sin(polar) * Math.sin(azimuth),
-    )
-    const quaternion = new THREE.Quaternion().setFromUnitVectors(UP, normal)
-    const surfacePoint = normal.clone().multiplyScalar(radius)
-    const camOffset = CAMERA_OFFSET.clone().multiplyScalar(zoom).applyQuaternion(quaternion)
-    const targetOffset = TARGET_OFFSET.clone().applyQuaternion(quaternion)
-
-    camera.position.copy(surfacePoint).add(camOffset)
-    camera.up.copy(normal)
-    camera.lookAt(surfacePoint.clone().add(targetOffset))
-  })
-
-  return null
-}
 
 export default function PlanetScene({
   cities,
@@ -172,7 +58,16 @@ export default function PlanetScene({
 
   const ownExtent = useMemo(() => (ownCity ? cityExtent(ownCity.buildings) : 0), [ownCity])
 
-  const initialCameraPosition: [number, number, number] = [42, radius + 34, 42]
+  // The same OrbitControls setup as atlas's globe (components/enhanced-
+  // globe.tsx in the atlas project): plain orbit around the sphere's true
+  // center (the default `target`, never overridden), no pan, distance
+  // clamped to a margin just above the surface up to a few radii out.
+  // Atlas starts pulled back at 3x its fixed radius (camera.position.z =
+  // 300 against a radius-100 Earth) rather than hugging the surface —
+  // ported here as the same ratio scaled to the current planetRadius,
+  // since a fixed close offset was the earlier design and specifically
+  // what read as broken.
+  const initialCameraPosition: [number, number, number] = [radius, radius * 2, radius * 2]
 
   function handlePlanetClick(e: ThreeEvent<MouseEvent>) {
     if (!placementMode || pending) return
@@ -230,10 +125,12 @@ export default function PlanetScene({
         }}
         gl={{ antialias: true }}
       >
-        {/* A fixed density, not scaled by planet radius — the camera stays
-            close to the pole's surface regardless of how large the planet
-            grows, so nearby viewing distances stay city-scale. */}
-        <fogExp2 attach="fog" args={['#170a28', 0.006]} />
+        {/* Density scales as ~1/radius, not a fixed value — atlas's orbit
+            camera ranges from just above the surface out to several planet
+            radii, unlike the earlier fixed close-up framing this replaced,
+            so a flat density either does nothing up close or fogs out the
+            entire planet from the default pulled-back view. */}
+        <fogExp2 attach="fog" args={['#170a28', 0.3 / radius]} />
         <ambientLight intensity={0.22} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
@@ -265,7 +162,14 @@ export default function PlanetScene({
           />
         )}
 
-        <PlanetCamera radius={radius} />
+        <OrbitControls
+          enablePan={false}
+          minDistance={radius * 1.05}
+          maxDistance={radius * 3}
+          rotateSpeed={0.5}
+          zoomSpeed={0.5}
+          makeDefault
+        />
 
         <EffectComposer>
           <Bloom luminanceThreshold={0.55} luminanceSmoothing={0.5} intensity={0.5} mipmapBlur />
