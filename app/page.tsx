@@ -22,8 +22,8 @@ export default async function HomePage() {
             A city built from code
           </h1>
           <p className="mt-4 text-sm text-foreground/70 sm:text-base">
-            Every building is a repository. Height is commits, color is language, light is stars.
-            The skyline above is {OWNER_USERNAME}&rsquo;s GitHub — connect your own to build
+            Every repository is a building. Commits is height, language is color, stars is light.
+            The skyline above is {OWNER_USERNAME}&rsquo;s GitHub, connect your own to build
             yours.
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
