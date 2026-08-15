@@ -59,7 +59,7 @@ export default function CitySky() {
       zenithColor: { value: new THREE.Color('#0a0714') },
       horizonColor: { value: new THREE.Color('#241040') },
       glowColor: { value: new THREE.Color('#ff2fd6') },
-      glowIntensity: { value: 0.7 },
+      glowIntensity: { value: 0.45 },
     }),
     [],
   )

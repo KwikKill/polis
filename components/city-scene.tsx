@@ -35,7 +35,7 @@ export default function CityScene({
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
         <CitySky />
-        <Ground buildings={city.buildings} />
+        <Ground buildings={city.buildings} districts={city.districts} />
         <BuildingField
           buildings={city.buildings}
           onHover={setHovered}
@@ -52,7 +52,7 @@ export default function CityScene({
         />
 
         <EffectComposer>
-          <Bloom luminanceThreshold={0.4} luminanceSmoothing={0.6} intensity={0.8} mipmapBlur />
+          <Bloom luminanceThreshold={0.55} luminanceSmoothing={0.5} intensity={0.5} mipmapBlur />
         </EffectComposer>
       </Canvas>
 

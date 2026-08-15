@@ -32,9 +32,17 @@ export interface Building {
   language: string | null
 }
 
+export interface District {
+  language: string
+  color: string
+  startAngle: number
+  endAngle: number
+}
+
 export interface CityData {
   username: string
   avatarUrl: string | null
   buildings: Building[]
+  districts: District[]
   generatedAt: string
 }

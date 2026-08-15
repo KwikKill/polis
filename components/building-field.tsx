@@ -64,13 +64,13 @@ function shadedBoxGeometry(): THREE.BoxGeometry {
 
 function bodyColor(b: Building): THREE.Color {
   const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.3 : 0.6 + b.intensity * 0.7
+  const boost = b.stale ? 0.28 : 0.45 + b.intensity * 0.45
   return color.multiplyScalar(boost)
 }
 
 function trimColor(b: Building): THREE.Color {
   const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.35 : 1.8 + b.intensity * 1.8
+  const boost = b.stale ? 0.3 : 1.1 + b.intensity * 1.2
   return color.multiplyScalar(boost)
 }
 

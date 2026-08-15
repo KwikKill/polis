@@ -1,8 +1,13 @@
 import { getLanguageColor } from '@/lib/colors'
-import type { Building, RepoData } from '@/lib/types'
+import type { Building, CityData, District, RepoData } from '@/lib/types'
 
-const GOLDEN_ANGLE = 2.399963229728653 // radians, Vogel's sunflower spiral
+// Low-discrepancy fill *within* a district's angular wedge — the golden
+// angle only gives even coverage across a full 2π circle, so a bounded
+// slice needs the 1D analogue: the fractional parts of i * (golden ratio
+// conjugate) fill [0, 1) evenly without periodic clumping.
+const WEYL_CONJUGATE = 0.6180339887498949
 const SPIRAL_SPACING = 4
+const BASE_RADIUS = 1.5 // keeps even a single-repo district off the exact center
 const MIN_FOOTPRINT = 1.2
 const MAX_FOOTPRINT = 3.6
 const MIN_HEIGHT = 1.5
@@ -22,6 +27,8 @@ function normalizedLog(value: number, max: number): number {
 // another wide one can still collide. Relax the layout with a few passes of
 // simple circle-based separation, nudging overlapping pairs apart. Cheap
 // enough to run as plain O(n²) for city-sized counts (<=MAX_REPOS repos).
+// Doesn't care how positions were seeded, so it works the same whether
+// buildings came from one global spiral or several per-district wedges.
 function resolveOverlaps(buildings: Building[]): void {
   for (let iter = 0; iter < SEPARATION_ITERATIONS; iter++) {
     let moved = false
@@ -49,14 +56,8 @@ function resolveOverlaps(buildings: Building[]): void {
   }
 }
 
-export function buildCity(repos: RepoData[]): Building[] {
-  if (repos.length === 0) return []
-
-  // Oldest first: the sunflower spiral's early indices sit near the center,
-  // so a repo's age directly determines its distance from downtown.
-  const byAge = [...repos].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-  )
+export function buildCity(repos: RepoData[]): Pick<CityData, 'buildings' | 'districts'> {
+  if (repos.length === 0) return { buildings: [], districts: [] }
 
   const maxCommits = Math.max(...repos.map((r) => r.commits), 1)
   const maxSize = Math.max(...repos.map((r) => r.sizeKb), 1)
@@ -72,47 +73,91 @@ export function buildCity(repos: RepoData[]): Building[] {
 
   const now = Date.now()
 
-  const buildings = byAge.map((repo, i) => {
-    const radius = SPIRAL_SPACING * Math.sqrt(i)
-    const angle = i * GOLDEN_ANGLE
+  // Group into language "districts" — biggest language first, so the most
+  // dominant one reads as the most central/prominent neighborhood.
+  const groups = new Map<string, RepoData[]>()
+  for (const repo of repos) {
+    const key = repo.language ?? 'Other'
+    const list = groups.get(key)
+    if (list) list.push(repo)
+    else groups.set(key, [repo])
+  }
+  const orderedGroups = [...groups.entries()].sort((a, b) => b[1].length - a[1].length)
 
-    const footprint =
-      MIN_FOOTPRINT + (MAX_FOOTPRINT - MIN_FOOTPRINT) * normalizedLog(repo.sizeKb, maxSize)
-    const height =
-      MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * normalizedLog(repo.commits, maxCommits)
+  // Proportional angular width per district, floored so a language with
+  // just one or two repos still reads as its own wedge instead of a sliver,
+  // then renormalized back to a full circle.
+  const minWidth = (Math.PI * 2) / (orderedGroups.length * 4)
+  const flooredWidths = orderedGroups.map(([, group]) =>
+    Math.max((group.length / repos.length) * Math.PI * 2, minWidth),
+  )
+  const widthSum = flooredWidths.reduce((a, b) => a + b, 0)
 
-    const landmark = landmarkNames.has(repo.name)
-    const ageDays = (now - new Date(repo.pushedAt).getTime()) / 86_400_000
-    const stale = ageDays > STALE_DAYS || repo.archived
+  const buildings: Building[] = []
+  const districts: District[] = []
+  let angleCursor = 0
 
-    // Star-fame only — staleness is applied as a render-time dimming
-    // multiplier (see building-field.tsx) rather than baked in here, so a
-    // stale-but-once-popular repo still reads as a big, dark, dead building
-    // rather than shrinking its glow to nothing.
-    let intensity = 0.15 + 0.85 * normalizedLog(repo.stars, maxStars)
-    if (landmark) intensity = Math.max(intensity, 0.85)
+  orderedGroups.forEach(([, group], groupIndex) => {
+    const sectorWidth = (flooredWidths[groupIndex] / widthSum) * Math.PI * 2
+    const startAngle = angleCursor
+    const endAngle = angleCursor + sectorWidth
+    angleCursor = endAngle
 
-    return {
-      repoName: repo.name,
-      description: repo.description,
-      htmlUrl: repo.htmlUrl,
-      x: radius * Math.cos(angle),
-      z: radius * Math.sin(angle),
-      width: footprint,
-      depth: footprint,
-      height,
-      color: getLanguageColor(repo.language),
-      intensity,
-      landmark,
-      stale,
-      fork: repo.fork,
-      stars: repo.stars,
-      commits: repo.commits,
-      language: repo.language,
-    } satisfies Building
+    districts.push({
+      language: group[0].language ?? 'Other',
+      color: getLanguageColor(group[0].language),
+      startAngle,
+      endAngle,
+    })
+
+    // Oldest first within the district: still "downtown" near its own
+    // wedge's center, newest pushed toward its outer edge.
+    const byAge = [...group].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    )
+
+    byAge.forEach((repo, i) => {
+      const radius = BASE_RADIUS + SPIRAL_SPACING * Math.sqrt(i)
+      const angle = startAngle + ((i * WEYL_CONJUGATE) % 1) * sectorWidth
+
+      const footprint =
+        MIN_FOOTPRINT + (MAX_FOOTPRINT - MIN_FOOTPRINT) * normalizedLog(repo.sizeKb, maxSize)
+      const height =
+        MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * normalizedLog(repo.commits, maxCommits)
+
+      const landmark = landmarkNames.has(repo.name)
+      const ageDays = (now - new Date(repo.pushedAt).getTime()) / 86_400_000
+      const stale = ageDays > STALE_DAYS || repo.archived
+
+      // Star-fame only — staleness is applied as a render-time dimming
+      // multiplier (see building-field.tsx) rather than baked in here, so a
+      // stale-but-once-popular repo still reads as a big, dark, dead
+      // building rather than shrinking its glow to nothing.
+      let intensity = 0.15 + 0.85 * normalizedLog(repo.stars, maxStars)
+      if (landmark) intensity = Math.max(intensity, 0.85)
+
+      buildings.push({
+        repoName: repo.name,
+        description: repo.description,
+        htmlUrl: repo.htmlUrl,
+        x: radius * Math.cos(angle),
+        z: radius * Math.sin(angle),
+        width: footprint,
+        depth: footprint,
+        height,
+        color: getLanguageColor(repo.language),
+        intensity,
+        landmark,
+        stale,
+        fork: repo.fork,
+        stars: repo.stars,
+        commits: repo.commits,
+        language: repo.language,
+      } satisfies Building)
+    })
   })
 
   resolveOverlaps(buildings)
 
-  return buildings
+  return { buildings, districts }
 }

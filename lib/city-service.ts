@@ -25,10 +25,13 @@ export async function generateAndSaveCity(
       .catch(() => null),
   ])
 
+  const { buildings, districts } = buildCity(repos)
+
   const city: CityData = {
     username,
     avatarUrl: profile?.avatar_url ?? null,
-    buildings: buildCity(repos),
+    buildings,
+    districts,
     generatedAt: new Date().toISOString(),
   }
 
