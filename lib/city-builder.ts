@@ -1,4 +1,4 @@
-import Delaunator from 'delaunator'
+import { Delaunay } from 'd3-delaunay'
 import { getLanguageColor } from '@/lib/colors'
 import type { Building, CityData, District, RepoData, Road } from '@/lib/types'
 
@@ -7,7 +7,7 @@ import type { Building, CityData, District, RepoData, Road } from '@/lib/types'
 // slice needs the 1D analogue: the fractional parts of i * (golden ratio
 // conjugate) fill [0, 1) evenly without periodic clumping.
 const WEYL_CONJUGATE = 0.6180339887498949
-const SPIRAL_SPACING = 5
+const SPIRAL_SPACING = 4.3
 const BASE_RADIUS = 1.5 // keeps even a single-repo district off the exact center
 const MIN_FOOTPRINT = 1.2
 const MAX_FOOTPRINT = 3.6
@@ -15,9 +15,9 @@ const MIN_HEIGHT = 1.5
 const MAX_HEIGHT = 26
 const STALE_DAYS = 365
 const LANDMARK_COUNT = 5
-const STREET_GAP = 1.1 // minimum clearance kept between building footprints
+const STREET_GAP = 0.9 // minimum clearance kept between building footprints
 const SEPARATION_ITERATIONS = 16
-const MAX_ROAD_LENGTH = 22 // drop spurious long convex-hull edges from the triangulation
+const ROAD_BOUNDS_PADDING = 7 // how far past the outermost building the Voronoi diagram gets clipped
 
 function normalizedLog(value: number, max: number): number {
   if (max <= 0) return 0
@@ -58,54 +58,70 @@ function resolveOverlaps(buildings: Building[]): void {
   }
 }
 
-// Delaunay triangulation of the final building centers gives exactly "which
-// buildings are neighbours" — drawing its edges as streets means every road
-// runs where two buildings actually sit next to each other, instead of an
-// arbitrary shape overlaid on top. Each segment is trimmed inward from both
-// ends so it sits in the gap between the two footprints, not through them.
+function edgeKey(x1: number, z1: number, x2: number, z2: number): string {
+  const round = (n: number) => Math.round(n * 100)
+  const a = `${round(x1)}_${round(z1)}`
+  const b = `${round(x2)}_${round(z2)}`
+  return a < b ? `${a}|${b}` : `${b}|${a}`
+}
+
+function onBoundsRect(
+  x: number,
+  z: number,
+  bounds: [number, number, number, number],
+  eps = 0.05,
+): boolean {
+  return (
+    Math.abs(x - bounds[0]) < eps ||
+    Math.abs(x - bounds[2]) < eps ||
+    Math.abs(z - bounds[1]) < eps ||
+    Math.abs(z - bounds[3]) < eps
+  )
+}
+
+// The Voronoi diagram is the dual of the Delaunay triangulation: its edges
+// are exactly the lines equidistant between neighbouring buildings — i.e.
+// the actual gaps between them — rather than lines connecting building
+// centers through the buildings themselves. Each building's Voronoi cell
+// is effectively its own plot; the network of cell boundaries reads as a
+// street grid the buildings sit *beside*, not a web radiating out of them.
 function buildRoads(buildings: Building[]): Road[] {
   if (buildings.length < 3) return []
 
-  const coords = new Float64Array(buildings.length * 2)
-  buildings.forEach((b, i) => {
-    coords[i * 2] = b.x
-    coords[i * 2 + 1] = b.z
-  })
+  const points: Array<[number, number]> = buildings.map((b) => [b.x, b.z])
+  const delaunay = Delaunay.from(points)
 
-  const delaunay = new Delaunator(coords)
+  const xs = buildings.map((b) => b.x)
+  const zs = buildings.map((b) => b.z)
+  const bounds: [number, number, number, number] = [
+    Math.min(...xs) - ROAD_BOUNDS_PADDING,
+    Math.min(...zs) - ROAD_BOUNDS_PADDING,
+    Math.max(...xs) + ROAD_BOUNDS_PADDING,
+    Math.max(...zs) + ROAD_BOUNDS_PADDING,
+  ]
+  const voronoi = delaunay.voronoi(bounds)
+
+  const seen = new Set<string>()
   const roads: Road[] = []
 
-  // Canonical way to walk unique undirected edges out of Delaunator's
-  // half-edge structure: each edge index e pairs with halfedges[e] (its
-  // twin on the neighbouring triangle, or -1 on the hull boundary); taking
-  // only e > halfedges[e] visits each edge exactly once.
-  for (let e = 0; e < delaunay.triangles.length; e++) {
-    if (e <= delaunay.halfedges[e]) continue
+  for (let i = 0; i < buildings.length; i++) {
+    const cell = voronoi.cellPolygon(i)
+    if (!cell) continue
 
-    const p = delaunay.triangles[e]
-    const q = delaunay.triangles[e % 3 === 2 ? e - 2 : e + 1]
-    const a = buildings[p]
-    const b = buildings[q]
+    for (let k = 0; k < cell.length; k++) {
+      const [x1, z1] = cell[k]
+      const [x2, z2] = cell[(k + 1) % cell.length]
 
-    const dx = b.x - a.x
-    const dz = b.z - a.z
-    const dist = Math.hypot(dx, dz)
-    if (dist < 1e-4 || dist > MAX_ROAD_LENGTH) continue
+      // Skip the outer frame introduced by clipping unbounded cells to
+      // `bounds` — it's not a real street, just where the diagram was cut.
+      if (onBoundsRect(x1, z1, bounds) && onBoundsRect(x2, z2, bounds)) continue
 
-    const gap = dist - a.width / 2 - b.width / 2
-    if (gap < 0.3) continue // buildings this close don't leave room for a visible street
+      const key = edgeKey(x1, z1, x2, z2)
+      if (seen.has(key)) continue
+      seen.add(key)
 
-    const nx = dx / dist
-    const nz = dz / dist
-    const startOffset = a.width / 2 + STREET_GAP * 0.4
-    const endOffset = b.width / 2 + STREET_GAP * 0.4
-
-    roads.push({
-      x1: a.x + nx * startOffset,
-      z1: a.z + nz * startOffset,
-      x2: b.x - nx * endOffset,
-      z2: b.z - nz * endOffset,
-    })
+      roads.push({ x1, z1, x2, z2 })
+    }
   }
 
   return roads

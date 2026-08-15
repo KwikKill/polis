@@ -5,9 +5,9 @@ import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import type { Building, Road } from '@/lib/types'
 
-const STREETLIGHT_COUNT = 44
-const STREETLIGHT_CLEARANCE = 1.4
-const STREETLIGHT_MIN_GAP = 3
+const MAX_STREETLIGHTS = 60
+const MIN_ROAD_LENGTH_FOR_LIGHT = 1.5
+const STREETLIGHT_OFFSET = 0.45 // perpendicular offset from the road centerline — the "sidewalk"
 
 const TERRAIN_SIZE = 220
 const TERRAIN_SEGMENTS = 100
@@ -25,11 +25,6 @@ const ROAD_COLOR = '#9d1fb8'
 interface Point {
   x: number
   z: number
-}
-
-function cityRadius(buildings: Building[]): number {
-  if (buildings.length === 0) return 20
-  return Math.max(...buildings.map((b) => Math.hypot(b.x, b.z) + b.width / 2)) + 4
 }
 
 // Cheap smooth "value noise" via a few layered sine waves — no external
@@ -76,31 +71,42 @@ function buildTerrainGeometry(buildings: Building[]): THREE.PlaneGeometry {
   return geo
 }
 
-// Rejection-sample points inside the city's footprint, keeping clear of
-// every building and of each other — cheap scatter for street-level decor
-// without needing an actual road graph.
-function scatterStreetlights(buildings: Building[], radius: number): Point[] {
-  if (buildings.length === 0) return []
+// One lamp per road segment (skipping tiny ones), offset to one side of the
+// centerline like a real sidewalk light — placing them independent of the
+// roads was the previous bug ("ça ne fait pas de sens sinon"). Segment
+// count can run into the hundreds for a busy city, so subsample down to a
+// readable density rather than lighting every single block edge.
+function streetlightsAlongRoads(roads: Road[]): Point[] {
+  const candidates: Point[] = []
 
-  const lights: Point[] = []
-  let attempts = 0
+  for (const r of roads) {
+    const dx = r.x2 - r.x1
+    const dz = r.z2 - r.z1
+    const length = Math.hypot(dx, dz)
+    if (length < MIN_ROAD_LENGTH_FOR_LIGHT) continue
 
-  while (lights.length < STREETLIGHT_COUNT && attempts < STREETLIGHT_COUNT * 25) {
-    attempts++
-    const angle = Math.random() * Math.PI * 2
-    const r = Math.sqrt(Math.random()) * radius
-    const x = Math.cos(angle) * r
-    const z = Math.sin(angle) * r
+    const nx = dx / length
+    const nz = dz / length
+    const side = Math.random() < 0.5 ? 1 : -1
+    // perpendicular to the road direction
+    const px = -nz * side
+    const pz = nx * side
 
-    const blocked = buildings.some(
-      (b) => Math.hypot(b.x - x, b.z - z) < b.width / 2 + STREETLIGHT_CLEARANCE,
-    )
-    const crowded = lights.some((l) => Math.hypot(l.x - x, l.z - z) < STREETLIGHT_MIN_GAP)
-
-    if (!blocked && !crowded) lights.push({ x, z })
+    candidates.push({
+      x: (r.x1 + r.x2) / 2 + px * STREETLIGHT_OFFSET,
+      z: (r.z1 + r.z2) / 2 + pz * STREETLIGHT_OFFSET,
+    })
   }
 
-  return lights
+  if (candidates.length <= MAX_STREETLIGHTS) return candidates
+
+  // Reservoir-ish random subsample so density stays readable city-wide
+  // rather than biased toward whichever roads happened to come first.
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+  }
+  return candidates.slice(0, MAX_STREETLIGHTS)
 }
 
 function Streetlight({ x, z }: Point) {
@@ -157,13 +163,12 @@ function RoadField({ roads, buildings }: { roads: Road[]; buildings: Building[] 
 }
 
 // Wet-asphalt reflection (Blade Runner) with gentle terrain relief, and an
-// actual road network — one street per pair of Delaunay-adjacent buildings,
-// so every road runs through a real gap between real neighbours instead of
-// an arbitrary shape overlaid on top of the layout.
+// actual road network — the Voronoi cell boundary of every building, so
+// streets run through the real gaps between buildings (a grid of blocks)
+// rather than a shape overlaid on top of the layout.
 export default function Ground({ buildings, roads }: { buildings: Building[]; roads: Road[] }) {
-  const radius = useMemo(() => cityRadius(buildings), [buildings])
   const terrainGeometry = useMemo(() => buildTerrainGeometry(buildings), [buildings])
-  const streetlights = useMemo(() => scatterStreetlights(buildings, radius), [buildings, radius])
+  const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
 
   return (
     <group>
