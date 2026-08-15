@@ -44,7 +44,10 @@ interface WindowInstance {
 // correctly regardless of scene lighting, while the *instance* color stays
 // deliberately restrained — most of a building's glow should come from its
 // edge trim and windows, not the walls themselves blowing out.
-const FACE_SHADE = [0.8, 0.6, 1, 0.35, 0.9, 0.5] // +x, -x, +y, -y, +z, -z
+// Range compressed vs. what you'd use on a bright material — bodyColor's
+// lightness is now deliberately low, so multiplying by anything much
+// smaller than ~0.55 crushes the dim faces to indistinguishable black.
+const FACE_SHADE = [0.85, 0.7, 1, 0.55, 0.9, 0.65] // +x, -x, +y, -y, +z, -z
 
 function shadedBoxGeometry(): THREE.BoxGeometry {
   const geo = new THREE.BoxGeometry(1, 1, 1)
@@ -62,15 +65,24 @@ function shadedBoxGeometry(): THREE.BoxGeometry {
   return geo
 }
 
+const hslScratch = { h: 0, s: 0, l: 0 }
+
+// The "fluorescent toy block" look wasn't really a brightness problem —
+// scaling a fully-saturated hex color by <1 just makes a darker version of
+// the same saturated hue, it doesn't make it read as a material. Pulling
+// *saturation* down (keeping only a hint of the language hue) and clamping
+// lightness low gives a dark, muted structural volume instead — the
+// language color's job becomes the edge trim and windows, not the walls.
 function bodyColor(b: Building): THREE.Color {
-  const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.28 : 0.45 + b.intensity * 0.45
-  return color.multiplyScalar(boost)
+  new THREE.Color(b.color).getHSL(hslScratch)
+  const lightness = b.stale ? 0.05 : 0.09 + b.intensity * 0.08
+  const saturation = b.stale ? 0.12 : 0.32
+  return new THREE.Color().setHSL(hslScratch.h, saturation, lightness)
 }
 
 function trimColor(b: Building): THREE.Color {
   const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.3 : 1.1 + b.intensity * 1.2
+  const boost = b.stale ? 0.3 : 1.0 + b.intensity * 1.0
   return color.multiplyScalar(boost)
 }
 

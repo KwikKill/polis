@@ -39,10 +39,21 @@ export interface District {
   endAngle: number
 }
 
+// A street segment between two buildings that ended up adjacent in the
+// Delaunay triangulation of building centers — trimmed to sit in the gap
+// between their footprints rather than running through either one.
+export interface Road {
+  x1: number
+  z1: number
+  x2: number
+  z2: number
+}
+
 export interface CityData {
   username: string
   avatarUrl: string | null
   buildings: Building[]
   districts: District[]
+  roads: Road[]
   generatedAt: string
 }
