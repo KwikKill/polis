@@ -36,15 +36,41 @@ interface WindowInstance {
 // with the scene's (deliberately dim, night-ambient) light — under that
 // lighting a scaled-up albedo can still render under the bloom threshold.
 // meshBasicMaterial sidesteps that: the instance color IS the pixel color.
+//
+// Being fully unlit loses all directional shading though — every face
+// renders as one flat color, which reads as a cartoon block rather than a
+// building. `shadedBoxGeometry` bakes a fixed per-face brightness (like
+// static ambient occlusion) as vertex colors so the volume still reads
+// correctly regardless of scene lighting, while the *instance* color stays
+// deliberately restrained — most of a building's glow should come from its
+// edge trim and windows, not the walls themselves blowing out.
+const FACE_SHADE = [0.8, 0.6, 1, 0.35, 0.9, 0.5] // +x, -x, +y, -y, +z, -z
+
+function shadedBoxGeometry(): THREE.BoxGeometry {
+  const geo = new THREE.BoxGeometry(1, 1, 1)
+  const colors = new Float32Array(24 * 3)
+  for (let face = 0; face < 6; face++) {
+    const shade = FACE_SHADE[face]
+    for (let v = 0; v < 4; v++) {
+      const idx = (face * 4 + v) * 3
+      colors[idx] = shade
+      colors[idx + 1] = shade
+      colors[idx + 2] = shade
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  return geo
+}
+
 function bodyColor(b: Building): THREE.Color {
   const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.35 : 1.1 + b.intensity * 1.6
+  const boost = b.stale ? 0.3 : 0.6 + b.intensity * 0.7
   return color.multiplyScalar(boost)
 }
 
 function trimColor(b: Building): THREE.Color {
   const color = new THREE.Color(b.color)
-  const boost = b.stale ? 0.4 : 2.2 + b.intensity * 2.4
+  const boost = b.stale ? 0.35 : 1.8 + b.intensity * 1.8
   return color.multiplyScalar(boost)
 }
 
@@ -78,6 +104,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
   const trimMesh = useRef<THREE.InstancedMesh>(null!)
   const windowMesh = useRef<THREE.InstancedMesh>(null!)
 
+  const bodyGeometry = useMemo(() => shadedBoxGeometry(), [])
   const landmarks = useMemo(() => buildings.filter((b) => b.landmark), [buildings])
   const forks = useMemo(() => buildings.filter((b) => b.fork), [buildings])
   const windows = useMemo(() => buildWindows(buildings), [buildings])
@@ -158,7 +185,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     <>
       <instancedMesh
         ref={mesh}
-        args={[undefined, undefined, buildings.length]}
+        args={[bodyGeometry, undefined, buildings.length]}
         onPointerMove={(e) => {
           e.stopPropagation()
           if (e.instanceId != null) onHover(buildings[e.instanceId])
@@ -169,8 +196,7 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
           if (e.instanceId != null) onSelect(buildings[e.instanceId])
         }}
       >
-        <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial toneMapped={false} />
+        <meshBasicMaterial toneMapped={false} vertexColors />
       </instancedMesh>
 
       <instancedMesh ref={trimMesh} args={[undefined, undefined, buildings.length * 4]}>

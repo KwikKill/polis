@@ -1,7 +1,8 @@
 'use client'
 
 import { Stars } from '@react-three/drei'
-import { useMemo } from 'react'
+import { useFrame } from '@react-three/fiber'
+import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 
 const VERTEX_SHADER = `
@@ -23,8 +24,9 @@ const FRAGMENT_SHADER = `
     float h = clamp(vDir.y, -1.0, 1.0);
     vec3 base = mix(horizonColor, zenithColor, smoothstep(0.0, 0.9, h));
     // Light-pollution glow hugging the skyline, the same magenta as the
-    // city's own neon — brightest right at the horizon, gone by mid-sky.
-    float glow = exp(-pow(max(h, 0.0) * 6.0, 2.0)) * glowIntensity;
+    // city's own neon — a tight band right at the horizon, not a wash
+    // across the whole sky.
+    float glow = exp(-pow(max(h, 0.0) * 16.0, 2.0)) * glowIntensity;
     gl_FragColor = vec4(base + glowColor * glow, 1.0);
   }
 `
@@ -35,19 +37,30 @@ const FRAGMENT_SHADER = `
 // pushed past 1.0 and toneMapped=false so the horizon glow catches Bloom
 // too, tying the sky into the same glow language as the neon buildings.
 export default function CitySky() {
+  const meshRef = useRef<THREE.Mesh>(null!)
+
+  // The sphere is centered at the world origin, but OrbitControls moves the
+  // camera far from it — at that offset the horizon ring (vDir.y ≈ 0)
+  // projects as a thick, skewed band instead of a thin line. Recentering
+  // the dome on the camera every frame makes it behave like a proper
+  // "infinitely far" skybox regardless of orbit position.
+  useFrame(({ camera }) => {
+    meshRef.current.position.copy(camera.position)
+  })
+
   const uniforms = useMemo(
     () => ({
       zenithColor: { value: new THREE.Color('#0a0714') },
       horizonColor: { value: new THREE.Color('#241040') },
       glowColor: { value: new THREE.Color('#ff2fd6') },
-      glowIntensity: { value: 2 },
+      glowIntensity: { value: 0.7 },
     }),
     [],
   )
 
   return (
     <>
-      <mesh renderOrder={-1}>
+      <mesh ref={meshRef} renderOrder={-1}>
         <sphereGeometry args={[280, 32, 16]} />
         <shaderMaterial
           side={THREE.BackSide}

@@ -52,7 +52,7 @@ export default function CityScene({
         />
 
         <EffectComposer>
-          <Bloom luminanceThreshold={0.25} luminanceSmoothing={0.9} intensity={1.1} mipmapBlur />
+          <Bloom luminanceThreshold={0.4} luminanceSmoothing={0.6} intensity={0.8} mipmapBlur />
         </EffectComposer>
       </Canvas>
 
