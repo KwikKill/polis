@@ -13,8 +13,10 @@ const PLANET_GROWTH = 35
 // Extra clearance beyond two cities' (or a city's and a feature's) own
 // touching extents — not a flat separation distance on its own, since a
 // tiny and a huge city need very different gaps to avoid actually
-// overlapping.
-const SECURITY_MARGIN = 15
+// overlapping. Kept small on purpose: this is a buffer against actual
+// overlap, not a stylistic gap — a bigger value reads as "placement is
+// weirdly far from everything."
+const SECURITY_MARGIN = 6
 const MAX_PLACEMENT_ATTEMPTS = 500
 const KNN_K = 3
 const MAX_ROAD_CHORD = 260 // don't force a road to a neighbor that's still very far away
@@ -27,7 +29,15 @@ export function planetRadius(cityCount: number): number {
 export interface PlanetFeature {
   kind: 'lake' | 'mountain'
   position: Vec3
-  radius: number // world units, converted to unit-sphere chord distance the same way city separation is
+  // Fraction of the *current* planet radius, not an absolute world-unit
+  // size — the planet grows as cities join, and a fixed-size lake would
+  // shrink relative to it over time. Use featureRadius() to resolve this
+  // against a specific radius.
+  radiusFraction: number
+}
+
+export function featureRadius(feature: PlanetFeature, radius: number): number {
+  return feature.radiusFraction * radius
 }
 
 // A city's own position + the actual reach of its buildings (city-builder
@@ -58,9 +68,12 @@ export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COU
   return {
     kind,
     position: fibonacciSpherePoint(i, FEATURE_COUNT),
-    // Lakes read as small ponds at the old size — sized up substantially
-    // for a "large body of water" feel; mountains stay more modest.
-    radius: kind === 'lake' ? 28 + (i % 3) * 12 : 14 + (i % 3) * 4,
+    // Fractions of the *current* planetRadius(), resolved at use time — see
+    // featureRadius() and its doc comment above. Kept in the same range as
+    // a typical city's own extent (a large city runs maybe 10-15% of the
+    // radius) so lakes read as landmarks among the cities, not as a feature
+    // that swallows a whole hemisphere.
+    radiusFraction: kind === 'lake' ? 0.035 + (i % 3) * 0.018 : 0.07 + (i % 3) * 0.02,
   }
 })
 
@@ -105,7 +118,7 @@ export function isValidPlacement(
   if (!clearOfCities) return false
 
   return PLANET_FEATURES.every((f) => {
-    const minWorldDist = candidateExtent + f.radius + SECURITY_MARGIN
+    const minWorldDist = candidateExtent + featureRadius(f, radius) + SECURITY_MARGIN
     const featureChordSq = (minWorldDist / radius) ** 2
     return chordDistSq(candidate, f.position) >= featureChordSq
   })

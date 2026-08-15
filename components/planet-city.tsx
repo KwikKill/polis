@@ -14,9 +14,11 @@ const UP = new THREE.Vector3(0, 1, 0)
 // local origin sits at unitVector*radius, and the wrapping group is
 // rotated so local +Y matches the outward normal there. BuildingField only
 // ever reasons in each building's local x/z, so it works nested inside an
-// arbitrarily positioned/rotated group without any changes of its own. No
-// true per-building spherical curvature: each city's own extent is small
-// relative to the planet radius, so a flat "sticker" reads correctly.
+// arbitrarily positioned/rotated group without any changes of its own.
+// Buildings themselves stay flat (small, mostly-vertical, the mismatch
+// isn't visually significant) — Ground's `curvature` prop pulls the wide
+// flat ground disc onto the sphere's true surface instead, which is where
+// the flat-tangent-plane approximation actually showed as a visible gap.
 export default function PlanetCity({
   city,
   radius,
@@ -52,7 +54,12 @@ export default function PlanetCity({
             : (b) => window.open(b.htmlUrl, '_blank', 'noopener,noreferrer')
         }
       />
-      <Ground roads={city.roads} reflective={false} groundRadius={groundRadius} />
+      <Ground
+        roads={city.roads}
+        reflective={false}
+        groundRadius={groundRadius}
+        curvature={{ normal, quaternion, planetRadius: radius }}
+      />
       {/* Nested inside the already-rotated group, so its local up already
           points radially outward at this city's own surface point. */}
       <Billboard position={[0, labelY, 0]}>

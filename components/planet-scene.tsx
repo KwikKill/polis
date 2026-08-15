@@ -1,10 +1,11 @@
 'use client'
 
 import { OrbitControls } from '@react-three/drei'
-import { Canvas, type ThreeEvent } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import * as THREE from 'three'
 import CitySky from '@/components/city-sky'
 import Footer from '@/components/footer'
 import PlanetCity from '@/components/planet-city'
@@ -15,6 +16,111 @@ import { cityExtent } from '@/lib/city-builder'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { relocateCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
+
+const YAW_SPEED = 0.006
+const PITCH_SPEED = 0.006
+const PITCH_LIMIT = 1.2 // radians (~69deg) either side of level — keeps the far pole out of view
+const CLICK_DRAG_THRESHOLD = 6 // px — below this, a pointer up/down pair counts as a click, not a drag
+
+// The camera stays fixed near the planet's pole; dragging spins the
+// *planet* underneath it instead — left/right rotates around the polar
+// axis (scrolling through parallels/longitude at a fixed latitude),
+// up/down tilts which latitude band faces the camera (scrolling through
+// meridians), clamped so the opposite pole never comes into view. Lives
+// inside the Canvas (needs useThree) and talks to the rest of the scene
+// purely via the group ref + callback — no scene state of its own.
+function PlanetController({
+  groupRef,
+  radius,
+  placementMode,
+  onPlanetClick,
+}: {
+  groupRef: React.RefObject<THREE.Group | null>
+  radius: number
+  placementMode: boolean
+  onPlanetClick: (candidate: Vec3) => void
+}) {
+  const { camera, gl } = useThree()
+  const onPlanetClickRef = useRef(onPlanetClick)
+  onPlanetClickRef.current = onPlanetClick
+
+  useEffect(() => {
+    const dom = gl.domElement
+    const raycaster = new THREE.Raycaster()
+    const ndc = new THREE.Vector2()
+    const drag = { active: false, lastX: 0, lastY: 0, startX: 0, startY: 0 }
+    const rotation = { yaw: 0, pitch: 0 }
+
+    function onPointerDown(e: PointerEvent) {
+      if (e.button !== 0) return
+      drag.active = true
+      drag.lastX = e.clientX
+      drag.lastY = e.clientY
+      drag.startX = e.clientX
+      drag.startY = e.clientY
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      if (!drag.active || !groupRef.current) return
+      const dx = e.clientX - drag.lastX
+      const dy = e.clientY - drag.lastY
+      drag.lastX = e.clientX
+      drag.lastY = e.clientY
+
+      rotation.yaw += dx * YAW_SPEED
+      rotation.pitch = Math.max(
+        -PITCH_LIMIT,
+        Math.min(PITCH_LIMIT, rotation.pitch + dy * PITCH_SPEED),
+      )
+      groupRef.current.quaternion.setFromEuler(
+        new THREE.Euler(rotation.pitch, rotation.yaw, 0, 'YXZ'),
+      )
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      if (!drag.active) return
+      drag.active = false
+
+      const dist = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY)
+      if (dist > CLICK_DRAG_THRESHOLD || !placementMode || !groupRef.current) return
+
+      const rect = dom.getBoundingClientRect()
+      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(ndc, camera)
+
+      // The planet sphere is always centered at the world origin and
+      // perfectly round, so rotating it doesn't change this at all —
+      // solving the ray/sphere intersection analytically avoids needing to
+      // raycast against a specific mesh, which could hit a building or
+      // lake sitting on the surface instead of the sphere itself.
+      const origin = raycaster.ray.origin
+      const direction = raycaster.ray.direction
+      const b = 2 * origin.dot(direction)
+      const c = origin.dot(origin) - radius * radius
+      const discriminant = b * b - 4 * c
+      if (discriminant < 0) return
+      const t = (-b - Math.sqrt(discriminant)) / 2
+      if (t < 0) return
+
+      const hitWorld = origin.clone().addScaledVector(direction, t)
+      groupRef.current.updateMatrixWorld(true)
+      const hitLocal = groupRef.current.worldToLocal(hitWorld.clone()).normalize()
+      onPlanetClickRef.current([hitLocal.x, hitLocal.y, hitLocal.z])
+    }
+
+    dom.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    return () => {
+      dom.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+    }
+  }, [camera, gl, groupRef, placementMode, radius])
+
+  return null
+}
 
 // The planet-scale analogue of city-scene.tsx: sky/fog/lights/Bloom are
 // singletons mounted once here (CitySky already recenters on the camera
@@ -35,6 +141,7 @@ export default function PlanetScene({
   children?: React.ReactNode
 }) {
   const router = useRouter()
+  const planetGroupRef = useRef<THREE.Group>(null)
   const [hovered, setHovered] = useState<Building | null>(null)
   const [pointer, setPointer] = useState({ x: 0, y: 0 })
   const [placementMode, setPlacementMode] = useState(false)
@@ -63,23 +170,17 @@ export default function PlanetScene({
 
   const ownExtent = useMemo(() => (ownCity ? cityExtent(ownCity.buildings) : 0), [ownCity])
 
-  // Anchored at the planet's north pole (global +Y, the surface point at
-  // [0, radius, 0]) rather than orbiting the planet's center from far out
-  // in space — the earlier version showed the whole globe as a small
-  // sphere in frame. This instead offsets the camera from the pole's
-  // surface point the same way the single-city scene offsets its camera
-  // from a city's own origin, so a city sitting there (or nearby) reads at
-  // building-scale immediately, side-on.
+  // The camera itself never moves — anchored near the planet's north pole
+  // (global +Y, the surface point at [0, radius, 0]) with the same
+  // ~40-unit offset city-scene.tsx uses from a city's own origin, so
+  // anything near the pole reads at building-scale immediately, side-on.
+  // PlanetController rotates the planet group in response to drag input
+  // instead of moving the camera around it.
   const initialCameraPosition: [number, number, number] = [42, radius + 34, 42]
   const orbitTarget: [number, number, number] = [0, radius + 4, 0]
 
-  function handlePlanetClick(e: ThreeEvent<MouseEvent>) {
-    if (!placementMode || pending) return
-    e.stopPropagation()
-
-    const len = e.point.length()
-    if (len < 1e-6) return
-    const candidate: Vec3 = [e.point.x / len, e.point.y / len, e.point.z / len]
+  function handlePlanetClick(candidate: Vec3) {
+    if (pending) return
 
     // Instant client-side feedback using the same pure function and
     // positions already in props — the server re-validates authoritatively
@@ -129,48 +230,56 @@ export default function PlanetScene({
         }}
         gl={{ antialias: true }}
       >
-        {/* A fixed density, not scaled by planet radius — now that the
-            camera is anchored near the pole's surface with the same
-            ~40-unit offset the single city page uses (not orbiting the
-            planet's center from a distance proportional to its size), the
-            actual nearby viewing distances stay city-scale regardless of
-            how large the planet grows, so this can just match city-scene
-            .tsx's own tuning instead of tracking `radius`. */}
+        {/* A fixed density, not scaled by planet radius — the camera is
+            anchored near the pole's surface with the same ~40-unit offset
+            city-scene.tsx uses, so nearby viewing distances stay
+            city-scale regardless of how large the planet grows. */}
         <fogExp2 attach="fog" args={['#170a28', 0.006]} />
         <ambientLight intensity={0.22} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
         <CitySky />
 
-        <mesh onClick={handlePlanetClick}>
-          <sphereGeometry args={[radius, 48, 32]} />
-          <meshBasicMaterial color="#0d0818" toneMapped={false} />
-        </mesh>
+        <group ref={planetGroupRef}>
+          <mesh>
+            <sphereGeometry args={[radius, 48, 32]} />
+            <meshBasicMaterial color="#0d0818" toneMapped={false} />
+          </mesh>
 
-        <PlanetFeatures radius={radius} />
-        <PlanetRoads roads={roads} />
+          <PlanetFeatures radius={radius} />
+          <PlanetRoads roads={roads} />
 
-        {cities.map((city) => (
-          <PlanetCity
-            key={city.username}
-            city={city}
-            radius={radius}
-            suppressSelect={placementMode}
-            onHover={setHovered}
-          />
-        ))}
+          {cities.map((city) => (
+            <PlanetCity
+              key={city.username}
+              city={city}
+              radius={radius}
+              suppressSelect={placementMode}
+              onHover={setHovered}
+            />
+          ))}
 
-        {previewCandidate && ownCity && (
-          <PlanetCityPreview
-            buildings={ownCity.buildings}
-            candidate={previewCandidate}
-            radius={radius}
-          />
-        )}
+          {previewCandidate && ownCity && (
+            <PlanetCityPreview
+              buildings={ownCity.buildings}
+              candidate={previewCandidate}
+              radius={radius}
+            />
+          )}
+        </group>
+
+        <PlanetController
+          groupRef={planetGroupRef}
+          radius={radius}
+          placementMode={placementMode}
+          onPlanetClick={handlePlanetClick}
+        />
 
         <OrbitControls
           enableDamping
           dampingFactor={0.08}
+          enableRotate={false}
+          enablePan={false}
           minDistance={12}
           maxDistance={Math.max(400, radius * 1.5)}
           target={orbitTarget}
@@ -223,7 +332,7 @@ export default function PlanetScene({
             ) : (
               <div className="pointer-events-auto flex items-center gap-3">
                 <p className="polis-hud-panel px-3 py-2 text-xs text-foreground/70">
-                  Click a spot on the planet to preview moving your city there.
+                  Drag to look around. Click a spot to preview moving your city there.
                 </p>
                 <button type="button" className="polis-btn" onClick={cancelMove}>
                   Cancel

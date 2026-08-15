@@ -3,7 +3,14 @@
 import { MeshReflectorMaterial } from '@react-three/drei'
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { buildCurvedDiscGeometry } from '@/lib/sphere-curve'
 import type { Road } from '@/lib/types'
+
+export interface GroundCurvature {
+  normal: THREE.Vector3
+  quaternion: THREE.Quaternion
+  planetRadius: number
+}
 
 const MAX_STREETLIGHTS = 60
 const MIN_ROAD_LENGTH_FOR_LIGHT = 1.5
@@ -235,44 +242,64 @@ function VehicleField({ vehicles }: { vehicles: Vehicle[] }) {
 // stacks linearly with city count. Set reflective={false} there to swap
 // the reflection for a flat matte disc sized to that city's own footprint,
 // while every other detail layer stays exactly as rich as this default.
+//
+// `curvature`, also planet-only: a flat disc's edges visibly float above
+// (or sink below) the sphere once the disc is large enough relative to the
+// planet's own radius for the gap to show. When provided, the ground disc
+// is built from vertices individually pulled onto the true sphere surface
+// (buildCurvedDiscGeometry) instead of a flat CircleGeometry.
 export default function Ground({
   roads,
   reflective = true,
   groundRadius = 250,
+  curvature,
 }: {
   roads: Road[]
   reflective?: boolean
   groundRadius?: number
+  curvature?: GroundCurvature
 }) {
   const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
   const vehicles = useMemo(() => vehiclesAlongRoads(roads), [roads])
 
+  const curvedGeometry = useMemo(() => {
+    if (!curvature) return null
+    return buildCurvedDiscGeometry(
+      groundRadius,
+      curvature.planetRadius,
+      curvature.normal,
+      curvature.quaternion,
+    )
+  }, [curvature, groundRadius])
+
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
-        {reflective ? (
-          <>
-            <planeGeometry args={[500, 500]} />
-            <MeshReflectorMaterial
-              blur={[300, 100]}
-              resolution={1024}
-              mixBlur={1}
-              mixStrength={35}
-              roughness={1}
-              depthScale={1.2}
-              minDepthThreshold={0.4}
-              maxDepthThreshold={1.4}
-              color="#050308"
-              metalness={0.4}
-            />
-          </>
-        ) : (
-          <>
-            <circleGeometry args={[groundRadius, 48]} />
-            <meshBasicMaterial color="#0d0a16" toneMapped={false} />
-          </>
-        )}
-      </mesh>
+      {reflective ? (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
+          <planeGeometry args={[500, 500]} />
+          <MeshReflectorMaterial
+            blur={[300, 100]}
+            resolution={1024}
+            mixBlur={1}
+            mixStrength={35}
+            roughness={1}
+            depthScale={1.2}
+            minDepthThreshold={0.4}
+            maxDepthThreshold={1.4}
+            color="#050308"
+            metalness={0.4}
+          />
+        </mesh>
+      ) : curvedGeometry ? (
+        <mesh geometry={curvedGeometry} position={[0, -0.02, 0]}>
+          <meshBasicMaterial color="#0d0a16" toneMapped={false} side={THREE.DoubleSide} />
+        </mesh>
+      ) : (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
+          <circleGeometry args={[groundRadius, 48]} />
+          <meshBasicMaterial color="#0d0a16" toneMapped={false} />
+        </mesh>
+      )}
 
       <SidewalkField roads={roads} />
       <RoadField roads={roads} />
