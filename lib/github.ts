@@ -59,22 +59,34 @@ async function fetchLanguages(
   return languages ?? {}
 }
 
-// /stats/commit_activity can return 202 while GitHub computes the cache —
-// retry once after a short delay, then give up rather than block generation.
+// GitHub's /stats/commit_activity is a cached, async endpoint: on a cold
+// cache (the common case — the first time anyone's queried a given repo) it
+// returns 202 while it computes, which routinely takes longer than is
+// reasonable to block city generation on, so callers landed on a silent 0
+// far too often. Instead, ask for exactly one commit per page and read the
+// total off the last page number in the pagination `Link` header — a single
+// synchronous request with no warm-up, and it covers full history rather
+// than just the last 52 weeks.
 async function fetchCommitCount(owner: string, repo: string, token?: string): Promise<number> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/stats/commit_activity`, {
-      headers: authHeaders(token),
-    })
-    if (res.status === 202) {
-      await new Promise((r) => setTimeout(r, 1500))
-      continue
-    }
-    if (!res.ok) return 0
-    const weeks = (await res.json()) as Array<{ total: number }>
-    return weeks.reduce((sum, w) => sum + w.total, 0)
+  const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/commits?per_page=1`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) return 0
+
+  const link = res.headers.get('link')
+  if (!link) {
+    const commits = (await res.json()) as unknown[]
+    return commits.length
   }
-  return 0
+
+  for (const part of link.split(',')) {
+    const match = part.match(/<([^>]+)>;\s*rel="last"/)
+    if (match) {
+      const page = new URL(match[1]).searchParams.get('page')
+      return page ? parseInt(page, 10) : 1
+    }
+  }
+  return 1
 }
 
 async function mapWithConcurrency<T, R>(
