@@ -1,0 +1,16 @@
+# Development Dockerfile
+FROM node:22-alpine
+
+# Install dependencies
+RUN apk add --no-cache libc6-compat openssl && corepack enable
+
+# Set working directory
+WORKDIR /src
+
+# Copy entrypoint
+COPY entrypoint-dev.sh /entrypoint-dev.sh
+RUN chmod +x /entrypoint-dev.sh
+
+EXPOSE 3000
+
+ENTRYPOINT ["/entrypoint-dev.sh"]

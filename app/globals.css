@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-orbitron), var(--font-geist), sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  /* theme-ghost, extended from hyperion: magenta/violet night-city palette */
+  --background: #0a0714;
+  --foreground: #f5f3ff;
+  --primary: #ff00ff;
+  --secondary: #8a2be2;
+  --accent: #ff69b4;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .polis-hud-panel {
+    @apply rounded border border-primary/30 bg-background/60 backdrop-blur-sm;
+    box-shadow: 0 0 20px color-mix(in oklab, var(--primary) 25%, transparent);
+  }
+
+  .polis-glow-text {
+    text-shadow: 0 0 6px color-mix(in oklab, var(--primary) 60%, transparent),
+      0 0 16px color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+
+  .polis-btn {
+    @apply rounded border border-primary/50 px-4 py-2 text-sm font-display uppercase tracking-wide text-foreground transition-colors hover:bg-primary/10 hover:border-primary;
+  }
+}

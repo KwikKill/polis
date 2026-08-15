@@ -1,0 +1,12 @@
+# Environment variables
+.env*.local
+
+# Common ignores
+node_modules
+.next/
+.DS_Store
+.pnpm-store
+next-env.d.ts
+
+# Prisma
+prisma/generated

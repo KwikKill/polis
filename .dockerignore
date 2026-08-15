@@ -1,0 +1,12 @@
+node_modules
+.next
+.pnpm-store
+.git
+.gitignore
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+Dockerfile*
+.dockerignore
+.env
+.env.local
