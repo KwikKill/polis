@@ -35,7 +35,7 @@ export default function CityScene({
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
         <CitySky />
-        <Ground buildings={city.buildings} roads={city.roads} />
+        <Ground roads={city.roads} />
         <BuildingField
           buildings={city.buildings}
           onHover={setHovered}

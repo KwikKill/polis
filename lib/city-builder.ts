@@ -8,7 +8,12 @@ import type { Building, CityData, District, RepoData, Road } from '@/lib/types'
 // conjugate) fill [0, 1) evenly without periodic clumping.
 const WEYL_CONJUGATE = 0.6180339887498949
 const SPIRAL_SPACING = 4.3
-const BASE_RADIUS = 1.5 // keeps even a single-repo district off the exact center
+// r = c*i^RADIAL_EXPONENT instead of the classic c*sqrt(i): an exponent
+// below 0.5 makes the curve steeper near i=0 (more room right around
+// downtown) and flatter for large i (rings pulled closer together further
+// out), redistributing density toward the center per user preference.
+const RADIAL_EXPONENT = 0.4
+const BASE_RADIUS = 2.2 // keeps even a single-repo district off the exact center
 const MIN_FOOTPRINT = 1.2
 const MAX_FOOTPRINT = 3.6
 const MIN_HEIGHT = 1.5
@@ -189,7 +194,7 @@ export function buildCity(repos: RepoData[]): Pick<CityData, 'buildings' | 'dist
     )
 
     byAge.forEach((repo, i) => {
-      const radius = BASE_RADIUS + SPIRAL_SPACING * densityFactor * Math.sqrt(i)
+      const radius = BASE_RADIUS + SPIRAL_SPACING * densityFactor * Math.pow(i, RADIAL_EXPONENT)
       const angle = startAngle + ((i * WEYL_CONJUGATE) % 1) * sectorWidth
 
       const footprint =

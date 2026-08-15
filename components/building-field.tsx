@@ -15,6 +15,9 @@ const MAX_WINDOW_COLS = 4
 const WINDOW_LIT_PROB_ACTIVE = 0.75
 const WINDOW_LIT_PROB_STALE = 0.1
 const WINDOW_COLOR = '#ffe3a8'
+const ROOF_PROP_COLOR = '#342e40'
+const TIER_MIN_HEIGHT = 10 // only buildings at least this tall get a setback tier
+const TIER_PROBABILITY = 0.5
 
 interface BuildingFieldProps {
   buildings: Building[]
@@ -27,6 +30,25 @@ interface WindowInstance {
   y: number
   z: number
   rotationY: number
+}
+
+interface RoofProp {
+  x: number
+  y: number
+  z: number
+  sx: number
+  sy: number
+  sz: number
+}
+
+interface Tier {
+  x: number
+  y: number
+  z: number
+  width: number
+  height: number
+  depth: number
+  color: THREE.Color
 }
 
 // Bloom (see city-scene.tsx) reacts to raw pixel luminance, not a material's
@@ -110,16 +132,69 @@ function buildWindows(buildings: Building[]): WindowInstance[] {
   return windows
 }
 
+// AC units, tanks, vents — the rooftop clutter real buildings have instead
+// of a perfectly clean flat top. Neutral utility color, not tied to the
+// building's own language hue, since these read as infrastructure.
+function buildRoofProps(buildings: Building[]): RoofProp[] {
+  const props: RoofProp[] = []
+  for (const b of buildings) {
+    if (b.landmark) continue // keep the beacon's roof clean
+    const count = 1 + Math.floor(Math.random() * 3)
+    for (let i = 0; i < count; i++) {
+      const margin = 0.3
+      const usable = Math.max(0.15, b.width - margin * 2)
+      const sy = 0.15 + Math.random() * 0.3
+      props.push({
+        x: b.x + (Math.random() - 0.5) * usable,
+        y: b.height + sy / 2,
+        z: b.z + (Math.random() - 0.5) * usable,
+        sx: 0.15 + Math.random() * 0.25,
+        sy,
+        sz: 0.15 + Math.random() * 0.25,
+      })
+    }
+  }
+  return props
+}
+
+// A narrower "penthouse" volume on top of some taller buildings, giving a
+// stepped-setback silhouette instead of every tower being a plain extruded
+// box. Reuses bodyColor so it reads as part of the same structure.
+function buildTiers(buildings: Building[]): Tier[] {
+  const tiers: Tier[] = []
+  for (const b of buildings) {
+    if (b.height < TIER_MIN_HEIGHT || Math.random() > TIER_PROBABILITY) continue
+    const startFrac = 0.55 + Math.random() * 0.25
+    const baseY = b.height * startFrac
+    const height = b.height - baseY + b.height * 0.08
+    const inset = 0.55 + Math.random() * 0.2
+    tiers.push({
+      x: b.x,
+      y: baseY + height / 2,
+      z: b.z,
+      width: b.width * inset,
+      height,
+      depth: b.depth * inset,
+      color: bodyColor(b),
+    })
+  }
+  return tiers
+}
+
 export default function BuildingField({ buildings, onHover, onSelect }: BuildingFieldProps) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
   const forkMesh = useRef<THREE.InstancedMesh>(null!)
   const trimMesh = useRef<THREE.InstancedMesh>(null!)
   const windowMesh = useRef<THREE.InstancedMesh>(null!)
+  const roofPropMesh = useRef<THREE.InstancedMesh>(null!)
+  const tierMesh = useRef<THREE.InstancedMesh>(null!)
 
   const bodyGeometry = useMemo(() => shadedBoxGeometry(), [])
   const landmarks = useMemo(() => buildings.filter((b) => b.landmark), [buildings])
   const forks = useMemo(() => buildings.filter((b) => b.fork), [buildings])
   const windows = useMemo(() => buildWindows(buildings), [buildings])
+  const roofProps = useMemo(() => buildRoofProps(buildings), [buildings])
+  const tiers = useMemo(() => buildTiers(buildings), [buildings])
 
   useLayoutEffect(() => {
     if (!mesh.current) return
@@ -193,6 +268,32 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
     windowMesh.current.instanceMatrix.needsUpdate = true
   }, [windows])
 
+  useLayoutEffect(() => {
+    if (!roofPropMesh.current || roofProps.length === 0) return
+    const dummy = new THREE.Object3D()
+    roofProps.forEach((p, i) => {
+      dummy.position.set(p.x, p.y, p.z)
+      dummy.scale.set(p.sx, p.sy, p.sz)
+      dummy.updateMatrix()
+      roofPropMesh.current.setMatrixAt(i, dummy.matrix)
+    })
+    roofPropMesh.current.instanceMatrix.needsUpdate = true
+  }, [roofProps])
+
+  useLayoutEffect(() => {
+    if (!tierMesh.current || tiers.length === 0) return
+    const dummy = new THREE.Object3D()
+    tiers.forEach((t, i) => {
+      dummy.position.set(t.x, t.y, t.z)
+      dummy.scale.set(t.width, t.height, t.depth)
+      dummy.updateMatrix()
+      tierMesh.current.setMatrixAt(i, dummy.matrix)
+      tierMesh.current.setColorAt(i, t.color)
+    })
+    tierMesh.current.instanceMatrix.needsUpdate = true
+    if (tierMesh.current.instanceColor) tierMesh.current.instanceColor.needsUpdate = true
+  }, [tiers])
+
   return (
     <>
       <instancedMesh
@@ -220,6 +321,19 @@ export default function BuildingField({ buildings, onHover, onSelect }: Building
         <instancedMesh ref={windowMesh} args={[undefined, undefined, windows.length]}>
           <planeGeometry args={[1, 1]} />
           <meshBasicMaterial color={WINDOW_COLOR} toneMapped={false} side={THREE.DoubleSide} />
+        </instancedMesh>
+      )}
+
+      {tiers.length > 0 && (
+        <instancedMesh ref={tierMesh} args={[bodyGeometry, undefined, tiers.length]}>
+          <meshBasicMaterial toneMapped={false} vertexColors />
+        </instancedMesh>
+      )}
+
+      {roofProps.length > 0 && (
+        <instancedMesh ref={roofPropMesh} args={[undefined, undefined, roofProps.length]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial color={ROOF_PROP_COLOR} toneMapped={false} />
         </instancedMesh>
       )}
 
