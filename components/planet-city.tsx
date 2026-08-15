@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import * as THREE from 'three'
 import BuildingField from '@/components/building-field'
 import Ground from '@/components/ground'
+import { cityExtent } from '@/lib/city-builder'
 import type { Building, PlanetCity as PlanetCityData } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -34,10 +35,7 @@ export default function PlanetCity({
   const position = useMemo(() => normal.clone().multiplyScalar(radius), [normal, radius])
   const quaternion = useMemo(() => new THREE.Quaternion().setFromUnitVectors(UP, normal), [normal])
 
-  const groundRadius = useMemo(
-    () => Math.max(...city.buildings.map((b) => Math.hypot(b.x, b.z) + b.width / 2), 10),
-    [city.buildings],
-  )
+  const groundRadius = useMemo(() => cityExtent(city.buildings), [city.buildings])
   const labelY = useMemo(
     () => Math.max(...city.buildings.map((b) => b.height), 0) + 8,
     [city.buildings],

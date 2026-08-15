@@ -3,15 +3,18 @@ import type { PlanetRoad } from '@/lib/types'
 export type Vec3 = [number, number, number]
 
 // radius = BASE + GROWTH * sqrt(N) — same "more items needs more room"
-// shape already used for the single city's spiral radius. Constants target
-// roughly 25% areal packing so rejection sampling in findValidPlacement
-// stays fast: each city "owns" a disc of radius MIN_SEPARATION_ARC/2, area
-// ~= pi*35^2 ~= 3848; solving N*3848 / (4*pi*R^2) = 0.25 for R gives
-// R ~= 35*sqrt(N), i.e. PLANET_GROWTH ~= MIN_SEPARATION_ARC / 2. Starting
-// values to tune by eye, same spirit as city-builder.ts's own constants.
+// shape already used for the single city's spiral radius. Only
+// approximately tuned now that required spacing depends on each city's own
+// size rather than one flat constant (see SECURITY_MARGIN below) — good
+// enough as a starting scale, adjust by eye if placement starts struggling
+// at typical city sizes.
 const PLANET_BASE_RADIUS = 120
 const PLANET_GROWTH = 35
-const MIN_SEPARATION_ARC = 70 // world-unit distance kept clear between any two cities
+// Extra clearance beyond two cities' (or a city's and a feature's) own
+// touching extents — not a flat separation distance on its own, since a
+// tiny and a huge city need very different gaps to avoid actually
+// overlapping.
+const SECURITY_MARGIN = 15
 const MAX_PLACEMENT_ATTEMPTS = 500
 const KNN_K = 3
 const MAX_ROAD_CHORD = 260 // don't force a road to a neighbor that's still very far away
@@ -24,7 +27,16 @@ export function planetRadius(cityCount: number): number {
 export interface PlanetFeature {
   kind: 'lake' | 'mountain'
   position: Vec3
-  radius: number // world units, converted to unit-sphere chord distance the same way MIN_SEPARATION_ARC is
+  radius: number // world units, converted to unit-sphere chord distance the same way city separation is
+}
+
+// A city's own position + the actual reach of its buildings (city-builder
+// .ts's cityExtent) — placement needs the real footprint, not just a
+// center point, or a big city's buildings can end up sitting in a lake
+// its center point was technically clear of.
+export interface PlacedCity {
+  position: Vec3
+  extent: number
 }
 
 const FEATURE_COUNT = 14
@@ -41,11 +53,16 @@ function fibonacciSpherePoint(i: number, n: number): Vec3 {
   return [Math.cos(theta) * r, y, Math.sin(theta) * r]
 }
 
-export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COUNT }, (_, i) => ({
-  kind: i % 2 === 0 ? 'lake' : 'mountain',
-  position: fibonacciSpherePoint(i, FEATURE_COUNT),
-  radius: 14 + (i % 3) * 4, // 14 / 18 / 22, some size variety
-}))
+export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COUNT }, (_, i) => {
+  const kind: 'lake' | 'mountain' = i % 2 === 0 ? 'lake' : 'mountain'
+  return {
+    kind,
+    position: fibonacciSpherePoint(i, FEATURE_COUNT),
+    // Lakes read as small ponds at the old size — sized up substantially
+    // for a "large body of water" feel; mountains stay more modest.
+    radius: kind === 'lake' ? 28 + (i % 3) * 12 : 14 + (i % 3) * 4,
+  }
+})
 
 // Marsaglia's method for a uniformly-distributed point on the unit sphere.
 export function randomUnitVector(): Vec3 {
@@ -69,24 +86,42 @@ export function chordDistSq(a: Vec3, b: Vec3): number {
   return 2 - 2 * dot
 }
 
-export function isValidPlacement(candidate: Vec3, existing: Vec3[], radius: number): boolean {
-  const minChordSq = (MIN_SEPARATION_ARC / radius) ** 2
-  const clearOfCities = existing.every((e) => chordDistSq(candidate, e) >= minChordSq)
+// A candidate is valid only if its own footprint (extent) plus a security
+// margin clears every other city's *actual* footprint, and every natural
+// feature's footprint — not just a fixed distance between center points,
+// which let a large city's buildings reach into a lake its center was
+// technically clear of.
+export function isValidPlacement(
+  candidate: Vec3,
+  candidateExtent: number,
+  existing: PlacedCity[],
+  radius: number,
+): boolean {
+  const clearOfCities = existing.every((e) => {
+    const minWorldDist = candidateExtent + e.extent + SECURITY_MARGIN
+    const minChordSq = (minWorldDist / radius) ** 2
+    return chordDistSq(candidate, e.position) >= minChordSq
+  })
   if (!clearOfCities) return false
 
   return PLANET_FEATURES.every((f) => {
-    const featureChordSq = (f.radius / radius) ** 2
+    const minWorldDist = candidateExtent + f.radius + SECURITY_MARGIN
+    const featureChordSq = (minWorldDist / radius) ** 2
     return chordDistSq(candidate, f.position) >= featureChordSq
   })
 }
 
-// Bounded rejection sampling for a spot at least MIN_SEPARATION_ARC world
-// units from every existing city. Always returns a position — on the rare
-// exhaustion of MAX_PLACEMENT_ATTEMPTS (the growth constants are tuned to
-// make this vanishingly unlikely), soft-degrades to whichever candidate
-// maximized the minimum distance to every neighbor, rather than failing
-// the join outright.
-export function findValidPlacement(existing: Vec3[], radius: number): Vec3 {
+// Bounded rejection sampling for a spot clear of every existing city's
+// footprint and every natural feature. Always returns a position — on the
+// rare exhaustion of MAX_PLACEMENT_ATTEMPTS (the growth constants are
+// tuned to make this vanishingly unlikely), soft-degrades to whichever
+// candidate maximized the minimum distance to every neighboring city,
+// rather than failing the join outright.
+export function findValidPlacement(
+  existing: PlacedCity[],
+  candidateExtent: number,
+  radius: number,
+): Vec3 {
   if (existing.length === 0) return randomUnitVector()
 
   let best = randomUnitVector()
@@ -94,9 +129,9 @@ export function findValidPlacement(existing: Vec3[], radius: number): Vec3 {
 
   for (let attempt = 0; attempt < MAX_PLACEMENT_ATTEMPTS; attempt++) {
     const candidate = randomUnitVector()
-    if (isValidPlacement(candidate, existing, radius)) return candidate
+    if (isValidPlacement(candidate, candidateExtent, existing, radius)) return candidate
 
-    const minDist = Math.min(...existing.map((e) => chordDistSq(candidate, e)))
+    const minDist = Math.min(...existing.map((e) => chordDistSq(candidate, e.position)))
     if (minDist > bestMinDist) {
       bestMinDist = minDist
       best = candidate

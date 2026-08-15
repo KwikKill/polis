@@ -11,7 +11,8 @@ import PlanetCity from '@/components/planet-city'
 import PlanetCityPreview from '@/components/planet-city-preview'
 import PlanetFeatures from '@/components/planet-features'
 import PlanetRoads from '@/components/planet-roads'
-import { isValidPlacement, type Vec3 } from '@/lib/planet-builder'
+import { cityExtent } from '@/lib/city-builder'
+import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { relocateCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
 
@@ -49,28 +50,28 @@ export default function PlanetScene({
     [cities, viewerUsername],
   )
 
-  const otherPositions = useMemo(
-    () =>
+  const otherCities = useMemo(
+    (): PlacedCity[] =>
       cities
         .filter((c) => c.username.toLowerCase() !== viewerUsername?.toLowerCase())
-        .map((c) => [c.planetX, c.planetY, c.planetZ] as Vec3),
+        .map((c) => ({
+          position: [c.planetX, c.planetY, c.planetZ] as Vec3,
+          extent: cityExtent(c.buildings),
+        })),
     [cities, viewerUsername],
   )
 
-  // Looking down from near the planet's "north" (global +Y) rather than
-  // aimed at any specific city's own local vertical — aiming directly
-  // along a city's own surface normal flattens it into a top-down view of
-  // its roofs (what a lone city on the planet looked like before). Viewed
-  // obliquely from above instead, any city away from the exact pole reads
-  // as a proper side-on skyline silhouette.
-  const initialCameraPosition = useMemo((): [number, number, number] => {
-    const dist = radius * 1.9
-    const dx = 0.35
-    const dy = 1
-    const dz = 0.35
-    const len = Math.hypot(dx, dy, dz)
-    return [(dx / len) * dist, (dy / len) * dist, (dz / len) * dist]
-  }, [radius])
+  const ownExtent = useMemo(() => (ownCity ? cityExtent(ownCity.buildings) : 0), [ownCity])
+
+  // Anchored at the planet's north pole (global +Y, the surface point at
+  // [0, radius, 0]) rather than orbiting the planet's center from far out
+  // in space — the earlier version showed the whole globe as a small
+  // sphere in frame. This instead offsets the camera from the pole's
+  // surface point the same way the single-city scene offsets its camera
+  // from a city's own origin, so a city sitting there (or nearby) reads at
+  // building-scale immediately, side-on.
+  const initialCameraPosition: [number, number, number] = [42, radius + 34, 42]
+  const orbitTarget: [number, number, number] = [0, radius + 4, 0]
 
   function handlePlanetClick(e: ThreeEvent<MouseEvent>) {
     if (!placementMode || pending) return
@@ -83,7 +84,7 @@ export default function PlanetScene({
     // Instant client-side feedback using the same pure function and
     // positions already in props — the server re-validates authoritatively
     // regardless inside relocateCity's transaction, this check is UX only.
-    if (!isValidPlacement(candidate, otherPositions, radius)) {
+    if (!isValidPlacement(candidate, ownExtent, otherCities, radius)) {
       setError('Too close to another city or a natural feature — try a different spot.')
       return
     }
@@ -128,11 +129,14 @@ export default function PlanetScene({
         }}
         gl={{ antialias: true }}
       >
-        {/* Tuned against the initial camera's actual diagonal distance from
-            origin (~1.9*radius given the position above), not just
-            `radius` itself — an earlier version fogged out almost the
-            entire default view because of that gap. */}
-        <fogExp2 attach="fog" args={['#170a28', 0.3 / radius]} />
+        {/* A fixed density, not scaled by planet radius — now that the
+            camera is anchored near the pole's surface with the same
+            ~40-unit offset the single city page uses (not orbiting the
+            planet's center from a distance proportional to its size), the
+            actual nearby viewing distances stay city-scale regardless of
+            how large the planet grows, so this can just match city-scene
+            .tsx's own tuning instead of tracking `radius`. */}
+        <fogExp2 attach="fog" args={['#170a28', 0.006]} />
         <ambientLight intensity={0.22} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
@@ -167,9 +171,9 @@ export default function PlanetScene({
         <OrbitControls
           enableDamping
           dampingFactor={0.08}
-          minDistance={radius * 1.05}
-          maxDistance={radius * 3.5}
-          target={[0, 0, 0]}
+          minDistance={12}
+          maxDistance={Math.max(400, radius * 1.5)}
+          target={orbitTarget}
         />
 
         <EffectComposer>

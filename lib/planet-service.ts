@@ -2,11 +2,13 @@
 
 import { Prisma } from '@prisma/client'
 import { auth } from '@/lib/auth'
+import { cityExtent } from '@/lib/city-builder'
 import {
   buildPlanetRoads,
   findValidPlacement,
   isValidPlacement,
   planetRadius,
+  type PlacedCity,
   type Vec3,
 } from '@/lib/planet-builder'
 import { prisma } from '@/lib/prisma'
@@ -71,11 +73,15 @@ export async function joinPlanet(): Promise<
 
     const others = await tx.city.findMany({
       where: { planetX: { not: null } },
-      select: { planetX: true, planetY: true, planetZ: true },
+      select: { planetX: true, planetY: true, planetZ: true, data: true },
     })
-    const existing: Vec3[] = others.map((o) => [o.planetX!, o.planetY!, o.planetZ!])
+    const existing: PlacedCity[] = others.map((o) => ({
+      position: [o.planetX!, o.planetY!, o.planetZ!],
+      extent: cityExtent((o.data as unknown as CityData).buildings),
+    }))
+    const candidateExtent = cityExtent((own.data as unknown as CityData).buildings)
     const radius = planetRadius(existing.length + 1)
-    const position = findValidPlacement(existing, radius)
+    const position = findValidPlacement(existing, candidateExtent, radius)
 
     await tx.city.update({
       where: { userId },
@@ -110,13 +116,17 @@ export async function relocateCity(
 
     const others = await tx.city.findMany({
       where: { planetX: { not: null }, userId: { not: userId } },
-      select: { planetX: true, planetY: true, planetZ: true },
+      select: { planetX: true, planetY: true, planetZ: true, data: true },
     })
-    const existing: Vec3[] = others.map((o) => [o.planetX!, o.planetY!, o.planetZ!])
+    const existing: PlacedCity[] = others.map((o) => ({
+      position: [o.planetX!, o.planetY!, o.planetZ!],
+      extent: cityExtent((o.data as unknown as CityData).buildings),
+    }))
+    const candidateExtent = cityExtent((own.data as unknown as CityData).buildings)
     const radius = planetRadius(existing.length + 1)
 
-    if (!isValidPlacement(normalized, existing, radius)) {
-      return { ok: false, error: 'too close to another city' }
+    if (!isValidPlacement(normalized, candidateExtent, existing, radius)) {
+      return { ok: false, error: 'too close to another city or a natural feature' }
     }
 
     await tx.city.update({

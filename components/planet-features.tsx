@@ -7,6 +7,7 @@ import { PLANET_FEATURES, type PlanetFeature } from '@/lib/planet-builder'
 const UP = new THREE.Vector3(0, 1, 0)
 const LAKE_COLOR = '#1a6ea8'
 const MOUNTAIN_COLOR = '#241f2e'
+const SHORELINE_POINTS = 20
 
 function useSurfaceTransform(feature: PlanetFeature, radius: number) {
   return useMemo(() => {
@@ -21,14 +22,37 @@ function useSurfaceTransform(feature: PlanetFeature, radius: number) {
   }, [feature, radius])
 }
 
-function Lake({ feature, radius }: { feature: PlanetFeature; radius: number }) {
+// An organic shoreline, not a perfect circle — a few layered sine
+// harmonics perturbing the radius at each angle, seeded by the feature's
+// own index (not Math.random()) so the shape is exactly as fixed/shared as
+// its position.
+function lakeShapePoints(baseRadius: number, seed: number): THREE.Vector2[] {
+  const points: THREE.Vector2[] = []
+  for (let i = 0; i < SHORELINE_POINTS; i++) {
+    const angle = (i / SHORELINE_POINTS) * Math.PI * 2
+    const wobble =
+      0.8 +
+      0.16 * Math.sin(angle * 3 + seed * 1.7) +
+      0.11 * Math.sin(angle * 5 + seed * 3.1) +
+      0.07 * Math.sin(angle * 2 - seed * 0.6)
+    const r = baseRadius * Math.max(0.55, wobble)
+    points.push(new THREE.Vector2(Math.cos(angle) * r, Math.sin(angle) * r))
+  }
+  return points
+}
+
+function Lake({ feature, radius, seed }: { feature: PlanetFeature; radius: number; seed: number }) {
   const { position, quaternion } = useSurfaceTransform(feature, radius)
+  const geometry = useMemo(() => {
+    const shape = new THREE.Shape(lakeShapePoints(feature.radius, seed))
+    return new THREE.ShapeGeometry(shape, 24)
+  }, [feature, seed])
+
   return (
     <group position={position} quaternion={quaternion}>
-      {/* CircleGeometry's default normal is +Z; tilt it flat against the
-          already-oriented parent group's local +Y (the outward normal). */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
-        <circleGeometry args={[feature.radius, 32]} />
+      {/* ShapeGeometry's default normal is +Z, same as CircleGeometry; tilt
+          it flat against the already-oriented parent group's local +Y. */}
+      <mesh geometry={geometry} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
         <meshBasicMaterial color={LAKE_COLOR} toneMapped={false} transparent opacity={0.85} />
       </mesh>
     </group>
@@ -75,7 +99,7 @@ export default function PlanetFeatures({ radius }: { radius: number }) {
     <>
       {PLANET_FEATURES.map((f, i) =>
         f.kind === 'lake' ? (
-          <Lake key={i} feature={f} radius={radius} />
+          <Lake key={i} feature={f} radius={radius} seed={i} />
         ) : (
           <Mountain key={i} feature={f} radius={radius} />
         ),

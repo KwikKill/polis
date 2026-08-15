@@ -29,6 +29,14 @@ function normalizedLog(value: number, max: number): number {
   return Math.log(value + 1) / Math.log(max + 1)
 }
 
+// How far this city's own buildings actually reach from its local origin —
+// the real footprint size, used wherever something needs to know "how much
+// room does this city need" (the planet's ground-disc sizing, and its
+// placement collision checks) rather than a one-size-fits-all constant.
+export function cityExtent(buildings: Building[]): number {
+  return Math.max(...buildings.map((b) => Math.hypot(b.x, b.z) + b.width / 2), 10)
+}
+
 // The sunflower spiral only guarantees *even density*, not that two
 // same-index-neighbours' footprints don't overlap — a wide building next to
 // another wide one can still collide. Relax the layout with a few passes of
