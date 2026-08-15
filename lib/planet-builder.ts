@@ -21,6 +21,32 @@ export function planetRadius(cityCount: number): number {
   return PLANET_BASE_RADIUS + PLANET_GROWTH * Math.sqrt(cityCount)
 }
 
+export interface PlanetFeature {
+  kind: 'lake' | 'mountain'
+  position: Vec3
+  radius: number // world units, converted to unit-sphere chord distance the same way MIN_SEPARATION_ARC is
+}
+
+const FEATURE_COUNT = 14
+const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
+
+// A Fibonacci lattice on the sphere — deterministic and evenly spread, no
+// Math.random() anywhere in it, so every visitor sees lakes and mountains
+// in exactly the same places (a fixed, shared landmark set, not decor that
+// differs per page load).
+function fibonacciSpherePoint(i: number, n: number): Vec3 {
+  const y = 1 - (i / (n - 1)) * 2
+  const r = Math.sqrt(Math.max(0, 1 - y * y))
+  const theta = GOLDEN_ANGLE_RAD * i
+  return [Math.cos(theta) * r, y, Math.sin(theta) * r]
+}
+
+export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COUNT }, (_, i) => ({
+  kind: i % 2 === 0 ? 'lake' : 'mountain',
+  position: fibonacciSpherePoint(i, FEATURE_COUNT),
+  radius: 14 + (i % 3) * 4, // 14 / 18 / 22, some size variety
+}))
+
 // Marsaglia's method for a uniformly-distributed point on the unit sphere.
 export function randomUnitVector(): Vec3 {
   let x1: number
@@ -45,7 +71,13 @@ export function chordDistSq(a: Vec3, b: Vec3): number {
 
 export function isValidPlacement(candidate: Vec3, existing: Vec3[], radius: number): boolean {
   const minChordSq = (MIN_SEPARATION_ARC / radius) ** 2
-  return existing.every((e) => chordDistSq(candidate, e) >= minChordSq)
+  const clearOfCities = existing.every((e) => chordDistSq(candidate, e) >= minChordSq)
+  if (!clearOfCities) return false
+
+  return PLANET_FEATURES.every((f) => {
+    const featureChordSq = (f.radius / radius) ** 2
+    return chordDistSq(candidate, f.position) >= featureChordSq
+  })
 }
 
 // Bounded rejection sampling for a spot at least MIN_SEPARATION_ARC world
