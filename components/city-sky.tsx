@@ -22,11 +22,17 @@ const FRAGMENT_SHADER = `
 
   void main() {
     float h = clamp(vDir.y, -1.0, 1.0);
-    vec3 base = mix(horizonColor, zenithColor, smoothstep(0.0, 0.9, h));
+    // The default camera pitches steeply downward, so the visible sky sits
+    // entirely at h < 0 (looking at the lower half of the dome) — a
+    // one-sided smoothstep/max(h,0) here clamps that whole region to a
+    // single value instead of a gradient. Shift + normalize so the curve
+    // works regardless of which way the camera is actually pitched.
+    float t = clamp((h + 0.15) / 0.85, 0.0, 1.0);
+    vec3 base = mix(horizonColor, zenithColor, pow(t, 1.4));
     // Light-pollution glow hugging the skyline, the same magenta as the
-    // city's own neon — a tight band right at the horizon, not a wash
-    // across the whole sky.
-    float glow = exp(-pow(max(h, 0.0) * 16.0, 2.0)) * glowIntensity;
+    // city's own neon — a tight band centered on true horizontal (h = 0),
+    // not a wash across the whole visible sky.
+    float glow = exp(-pow(h * 14.0, 2.0)) * glowIntensity;
     gl_FragColor = vec4(base + glowColor * glow, 1.0);
   }
 `
