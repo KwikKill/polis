@@ -227,26 +227,51 @@ function VehicleField({ vehicles }: { vehicles: Vehicle[] }) {
 // cell boundary of every building, so streets run through the real gaps
 // between buildings — with sidewalks, streetlights and parked vehicles
 // layered along it.
-export default function Ground({ roads }: { roads: Road[] }) {
+//
+// `reflective`/`groundRadius` exist for the planet view, where many full
+// cities render at once: MeshReflectorMaterial is a real extra scene
+// render from a mirrored camera every frame, per instance — unlike more
+// InstancedMesh triangles (cheap to batch), that cost doesn't batch and
+// stacks linearly with city count. Set reflective={false} there to swap
+// the reflection for a flat matte disc sized to that city's own footprint,
+// while every other detail layer stays exactly as rich as this default.
+export default function Ground({
+  roads,
+  reflective = true,
+  groundRadius = 250,
+}: {
+  roads: Road[]
+  reflective?: boolean
+  groundRadius?: number
+}) {
   const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
   const vehicles = useMemo(() => vehiclesAlongRoads(roads), [roads])
 
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
-        <planeGeometry args={[500, 500]} />
-        <MeshReflectorMaterial
-          blur={[300, 100]}
-          resolution={1024}
-          mixBlur={1}
-          mixStrength={35}
-          roughness={1}
-          depthScale={1.2}
-          minDepthThreshold={0.4}
-          maxDepthThreshold={1.4}
-          color="#050308"
-          metalness={0.4}
-        />
+        {reflective ? (
+          <>
+            <planeGeometry args={[500, 500]} />
+            <MeshReflectorMaterial
+              blur={[300, 100]}
+              resolution={1024}
+              mixBlur={1}
+              mixStrength={35}
+              roughness={1}
+              depthScale={1.2}
+              minDepthThreshold={0.4}
+              maxDepthThreshold={1.4}
+              color="#050308"
+              metalness={0.4}
+            />
+          </>
+        ) : (
+          <>
+            <circleGeometry args={[groundRadius, 48]} />
+            <meshBasicMaterial color="#0d0a16" toneMapped={false} />
+          </>
+        )}
       </mesh>
 
       <SidewalkField roads={roads} />

@@ -11,6 +11,20 @@ export async function getCity(username: string): Promise<CityData | null> {
   return row.data as unknown as CityData
 }
 
+// CityData deliberately doesn't carry a userId (it's the persisted render
+// payload, not row metadata), so a viewer's ownership of a given city page
+// needs a small separate query rather than widening that type.
+export async function getViewerCityStatus(
+  username: string,
+  userId: string,
+): Promise<{ isOwner: boolean; onPlanet: boolean }> {
+  const row = await prisma.city.findFirst({
+    where: { username: { equals: username, mode: 'insensitive' }, userId },
+    select: { planetX: true },
+  })
+  return row ? { isOwner: true, onPlanet: row.planetX !== null } : { isOwner: false, onPlanet: false }
+}
+
 export async function generateAndSaveCity(
   userId: string,
   username: string,

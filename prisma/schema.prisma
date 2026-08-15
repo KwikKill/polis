@@ -69,6 +69,13 @@ model City {
   generatedAt DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Planet placement — a unit vector on the shared planet's surface.
+  // planetX !== null is the "on the planet" flag; no separate boolean, so
+  // there's no reachable inconsistent state.
+  planetX Float?
+  planetY Float?
+  planetZ Float?
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([username])

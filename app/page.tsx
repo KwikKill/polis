@@ -30,6 +30,9 @@ export default async function HomePage() {
             <Link href={`/u/${OWNER_USERNAME}`} className="polis-btn">
               View {OWNER_USERNAME}&rsquo;s city →
             </Link>
+            <Link href="/planet" className="polis-btn">
+              View planet →
+            </Link>
           </div>
           {!city && (
             <p className="mt-4 text-xs text-foreground/40">

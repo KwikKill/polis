@@ -39,9 +39,8 @@ export interface District {
   endAngle: number
 }
 
-// A street segment between two buildings that ended up adjacent in the
-// Delaunay triangulation of building centers — trimmed to sit in the gap
-// between their footprints rather than running through either one.
+// A street segment along the boundary of two buildings' Voronoi cells —
+// the actual gap between them, not a line connecting their centers.
 export interface Road {
   x1: number
   z1: number
@@ -56,4 +55,24 @@ export interface CityData {
   districts: District[]
   roads: Road[]
   generatedAt: string
+}
+
+// A city that has joined the shared planet — its own rendering data plus
+// where it sits on the planet's surface, stored as a unit vector.
+export interface PlanetCity extends CityData {
+  planetX: number
+  planetY: number
+  planetZ: number
+}
+
+// One short segment of a curved road between two nearby planet cities,
+// sampled along a great-circle-ish arc — several of these approximate one
+// full connection.
+export interface PlanetRoad {
+  x1: number
+  y1: number
+  z1: number
+  x2: number
+  y2: number
+  z2: number
 }
