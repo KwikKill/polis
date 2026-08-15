@@ -29,11 +29,11 @@ export default function CityScene({
         gl={{ antialias: true }}
       >
         <color attach="background" args={['#0a0714']} />
-        <fogExp2 attach="fog" args={['#0a0714', 0.017]} />
+        <fogExp2 attach="fog" args={['#0a0714', 0.007]} />
         <ambientLight intensity={0.2} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
-        <Ground />
+        <Ground buildings={city.buildings} />
         <BuildingField
           buildings={city.buildings}
           onHover={setHovered}
