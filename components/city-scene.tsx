@@ -5,6 +5,8 @@ import { Canvas } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useState } from 'react'
 import BuildingField from '@/components/building-field'
+import CitySky from '@/components/city-sky'
+import Footer from '@/components/footer'
 import Ground from '@/components/ground'
 import type { Building, CityData } from '@/lib/types'
 
@@ -28,11 +30,11 @@ export default function CityScene({
         camera={{ position: [42, 34, 42], fov: 45, near: 0.1, far: 320 }}
         gl={{ antialias: true }}
       >
-        <color attach="background" args={['#0a0714']} />
-        <fogExp2 attach="fog" args={['#0a0714', 0.007]} />
+        <fogExp2 attach="fog" args={['#170a28', 0.007]} />
         <ambientLight intensity={0.2} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
+        <CitySky />
         <Ground buildings={city.buildings} />
         <BuildingField
           buildings={city.buildings}
@@ -67,6 +69,8 @@ export default function CityScene({
           </p>
         </div>
       )}
+
+      <Footer />
 
       {children}
     </div>
