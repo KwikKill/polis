@@ -25,6 +25,8 @@ const MAX_PLACEMENT_ATTEMPTS = 500
 const KNN_K = 3
 const MAX_ROAD_CHORD = 260 // don't force a road to a neighbor that's still very far away
 const ROAD_SEGMENTS = 10 // straight sub-segments approximating one curved connection
+const CITY_ROAD_CLEARANCE_MARGIN = 4 // beyond a city's own extent, so a road doesn't just graze its edge either
+const FEATURE_DETOUR_CLEARANCE_MARGIN = 6 // extra clearance beyond a feature's own radius when routing a road around it
 
 export function planetRadius(cityCount: number): number {
   return PLANET_BASE_RADIUS + PLANET_GROWTH * Math.sqrt(cityCount)
@@ -181,12 +183,15 @@ export function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   return [a[0] * cosT + rx * sinT, a[1] * cosT + ry * sinT, a[2] * cosT + rz * sinT]
 }
 
-// What buildPlanetRoads needs from each city: its placement, plus its own
-// local road network, so an inter-city connection can meet an actual road
-// end instead of just aiming at the city's center point.
+// What buildPlanetRoads needs from each city: its placement, its own local
+// road network (so an inter-city connection can meet an actual road end
+// instead of just aiming at the city's center point), and its extent (so a
+// connection between two *other* cities can tell whether it would cut
+// through this one's own footprint).
 export interface PlanetCityRoadInfo {
   position: Vec3
   roads: Road[]
+  extent: number
 }
 
 // The point where a city's own road network actually reaches furthest
@@ -231,6 +236,178 @@ function cityEdgePoint(city: PlanetCityRoadInfo, towardPosition: Vec3, radius: n
   return [worldPoint.x / radius, worldPoint.y / radius, worldPoint.z / radius]
 }
 
+// How far along the a-b arc (0 = a, 1 = b), sampled at ROAD_SEGMENTS
+// resolution, comes closest to `point` -- used both to test whether a path
+// enters an obstacle's zone at all and, if so, roughly where along the
+// path that happens.
+function closestApproachT(a: Vec3, b: Vec3, point: Vec3, samples = ROAD_SEGMENTS): number {
+  let bestT = 0
+  let bestDistSq = Infinity
+  for (let s = 0; s <= samples; s++) {
+    const t = s / samples
+    const d = chordDistSq(slerpUnit(a, b, t), point)
+    if (d < bestDistSq) {
+      bestDistSq = d
+      bestT = t
+    }
+  }
+  return bestT
+}
+
+// World-unit distance from the closest point sampled along the a-b arc to
+// `point`, the same sampling closestApproachT does, just returning the
+// distance itself rather than where it happened.
+function pathMinWorldDist(a: Vec3, b: Vec3, point: Vec3, radius: number, samples = ROAD_SEGMENTS): number {
+  let bestDistSq = Infinity
+  for (let s = 0; s <= samples; s++) {
+    const d = chordDistSq(slerpUnit(a, b, s / samples), point)
+    if (d < bestDistSq) bestDistSq = d
+  }
+  return Math.sqrt(bestDistSq) * radius
+}
+
+// A single point pushed away from `obstaclePosition`, along the great
+// circle through it and `point`, extrapolated (via slerpUnit with t > 1)
+// until it's `targetWorldRadius` away. Deliberately not "push the point
+// away in flat 3D space, then re-normalize back onto the sphere" (an
+// earlier version did exactly that, and it doesn't actually work,
+// re-normalizing after a flat push moves the point back toward/away from
+// the obstacle by an amount that has nothing to do with the push
+// distance, so the result routinely landed *closer* to the obstacle than
+// intended). Slerp extrapolation stays exactly on the sphere throughout,
+// so the angle from the obstacle is exact by construction; chord and arc
+// distance are close enough at these scales (exclusion radii a few
+// percent of the planet radius) that solving for the angle instead of the
+// chord directly is an imperceptible difference.
+function pushAwayFromObstacle(
+  point: Vec3,
+  obstaclePosition: Vec3,
+  targetWorldRadius: number,
+  radius: number,
+): Vec3 {
+  const dot = Math.min(
+    1,
+    Math.max(
+      -1,
+      obstaclePosition[0] * point[0] + obstaclePosition[1] * point[1] + obstaclePosition[2] * point[2],
+    ),
+  )
+  const angle = Math.acos(dot)
+  if (angle < 1e-6) return point // point coincides with the obstacle's own center; nothing sane to push toward
+
+  const desiredAngle = targetWorldRadius / radius
+  const t = Math.max(1, desiredAngle / angle)
+  return slerpUnit(obstaclePosition, point, t)
+}
+
+// Where the straight a-b path crosses `clearWorldRadius` away from
+// `obstaclePosition`, entering and exiting, found by sampling and linearly
+// interpolating between the bracketing samples. Assumes (and callers
+// should already have checked) that the path actually comes closer than
+// clearWorldRadius somewhere in between.
+function findBoundaryCrossings(
+  a: Vec3,
+  b: Vec3,
+  obstaclePosition: Vec3,
+  clearWorldRadius: number,
+  radius: number,
+  samples = 40,
+): { entryT: number; exitT: number } {
+  const distAt = (t: number) => Math.sqrt(chordDistSq(slerpUnit(a, b, t), obstaclePosition)) * radius
+
+  let entryT = -1
+  let exitT = -1
+  let prevT = 0
+  let prevDist = distAt(0)
+
+  for (let s = 1; s <= samples; s++) {
+    const t = s / samples
+    const dist = distAt(t)
+
+    if (entryT < 0 && prevDist >= clearWorldRadius && dist < clearWorldRadius) {
+      const frac = (clearWorldRadius - prevDist) / (dist - prevDist)
+      entryT = prevT + frac * (t - prevT)
+    }
+    if (prevDist < clearWorldRadius && dist >= clearWorldRadius) {
+      const frac = (clearWorldRadius - prevDist) / (dist - prevDist)
+      exitT = prevT + frac * (t - prevT)
+    }
+
+    prevT = t
+    prevDist = dist
+  }
+
+  return { entryT: entryT < 0 ? 0 : entryT, exitT: exitT < 0 ? 1 : exitT }
+}
+
+const DETOUR_ARC_POINTS = 5 // interior waypoints spanning the exclusion zone
+// Beyond the exact exclusion radius: a straight chord between two points
+// on the same circle sags slightly *inside* that circle, so pushing points
+// to exactly clearWorldRadius still let the connecting legs dip a little
+// under it (verified: with no margin at all the closest approach landed
+// just under the target). 1.3x comfortably absorbs that sag at
+// DETOUR_ARC_POINTS's spacing without needing to solve for the exact
+// chord-sag amount.
+const DETOUR_CLEAR_MARGIN = 1.3
+
+// The a-b path bent around a single obstacle, as a run of waypoints to
+// splice in between a and b. Pushing only the *single* deepest point away
+// from the obstacle (an earlier version of this function did exactly
+// that) isn't enough on its own, since the straight legs connecting that
+// one point back to a and b are then free to cut back through the
+// exclusion zone on either side of it, verified: they routinely did.
+// Instead, sample several points along the stretch of the *original*
+// straight path that actually falls inside the exclusion zone (found via
+// findBoundaryCrossings) and push each of them out individually,
+// connecting the pushed points in sequence approximates an arc around the
+// obstacle's boundary, since nearby points pushed onto (approximately)
+// the same circle stay close to that circle's own arc when connected by
+// short straight chords.
+function buildFeatureDetour(
+  a: Vec3,
+  b: Vec3,
+  obstaclePosition: Vec3,
+  clearWorldRadius: number,
+  radius: number,
+): Vec3[] {
+  const { entryT, exitT } = findBoundaryCrossings(a, b, obstaclePosition, clearWorldRadius, radius)
+  if (entryT >= exitT) return []
+
+  const targetRadius = clearWorldRadius * DETOUR_CLEAR_MARGIN
+  const waypoints: Vec3[] = []
+  for (let i = 0; i <= DETOUR_ARC_POINTS + 1; i++) {
+    const t = entryT + (exitT - entryT) * (i / (DETOUR_ARC_POINTS + 1))
+    const onPath = slerpUnit(a, b, t)
+    waypoints.push(pushAwayFromObstacle(onPath, obstaclePosition, targetRadius, radius))
+  }
+  return waypoints
+}
+
+// Splits a straight city-edge-to-city-edge connection into waypoints that
+// route around any lake/mountain whose exclusion zone the direct path
+// would otherwise cut through, ordered along the path. A lake or mountain
+// isn't a place a road could instead be routed *through* via a third city
+// the way an intervening city is handled (see buildPlanetRoads), it just
+// needs to be gone around.
+function buildRoadWaypoints(a: Vec3, b: Vec3, radius: number): Vec3[] {
+  const intersecting = PLANET_FEATURES.map((f) => ({
+    position: f.position,
+    clearRadius: featureRadius(f, radius) + FEATURE_DETOUR_CLEARANCE_MARGIN,
+  }))
+    .filter((f) => pathMinWorldDist(a, b, f.position, radius) < f.clearRadius)
+    .map((f) => ({ ...f, t: closestApproachT(a, b, f.position) }))
+    .sort((x, y) => x.t - y.t)
+
+  if (intersecting.length === 0) return [a, b]
+
+  const waypoints: Vec3[] = [a]
+  for (const feature of intersecting) {
+    waypoints.push(...buildFeatureDetour(a, b, feature.position, feature.clearRadius, radius))
+  }
+  waypoints.push(b)
+  return waypoints
+}
+
 // "Roads between nearby cities" as a K-nearest-neighbor graph (union, not
 // mutual, a city connects to its K nearest, and an edge exists if either
 // endpoint claims the other), not a spherical Voronoi/Delaunay diagram.
@@ -244,10 +421,29 @@ function cityEdgePoint(city: PlanetCityRoadInfo, towardPosition: Vec3, radius: n
 // chosen over raw delaunator to avoid for the flat-city case.
 //
 // Neighbor selection itself still uses each city's *center* (that's about
-// which cities count as "nearby" at all); only the rendered path changes,
-// running from the road-network edge of one city to the road-network edge
-// of the other rather than center to center, so it reads as a highway
-// continuing an actual street instead of a line hovering over rooftops.
+// which cities count as "nearby" at all); the rendered path runs from the
+// road-network edge of one city to the road-network edge of the other
+// rather than center to center, so it reads as a highway continuing an
+// actual street instead of a line hovering over rooftops.
+//
+// The two edge points are picked *asymmetrically*, not independently:
+// city i's point is whichever of its own road ends reaches furthest toward
+// city j's *center*, but city j's point then aims at city i's
+// *already-chosen point*, not city j's center. Picking both independently
+// against the two centers let them end up facing slightly different
+// directions from each other's actual position, producing a visible kink
+// where the straight connection met neither edge point head-on. Chaining
+// the second pick off the first guarantees the two ends are at least
+// mutually aimed at each other.
+//
+// A connection is dropped outright (not drawn at all) if the straight path
+// between those two edge points would cut through a *third* city's own
+// footprint, that third city is presumably already connected to both ends
+// via its own KNN edges, so the direct link becomes redundant as well as
+// visually wrong (a road cutting across someone else's rooftops). A lake
+// or mountain in the way is handled differently, curveWorldPoint's sibling
+// buildRoadWaypoints bends the path around it instead, since there's no
+// third city to route through.
 export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): PlanetRoad[] {
   if (cities.length < 2) return []
 
@@ -275,19 +471,33 @@ export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): 
       seen.add(key)
 
       const edgeI = cityEdgePoint(cities[i], positions[j], radius)
-      const edgeJ = cityEdgePoint(cities[j], positions[i], radius)
+      const edgeJ = cityEdgePoint(cities[j], edgeI, radius)
 
-      for (let s = 0; s < ROAD_SEGMENTS; s++) {
-        const p0 = slerpUnit(edgeI, edgeJ, s / ROAD_SEGMENTS)
-        const p1 = slerpUnit(edgeI, edgeJ, (s + 1) / ROAD_SEGMENTS)
-        roads.push({
-          x1: p0[0] * radius,
-          y1: p0[1] * radius,
-          z1: p0[2] * radius,
-          x2: p1[0] * radius,
-          y2: p1[1] * radius,
-          z2: p1[2] * radius,
-        })
+      const blockedByOtherCity = cities.some((c, k) => {
+        if (k === i || k === j) return false
+        const clearRadius = c.extent + CITY_ROAD_CLEARANCE_MARGIN
+        return pathMinWorldDist(edgeI, edgeJ, c.position, radius) < clearRadius
+      })
+      if (blockedByOtherCity) continue
+
+      const waypoints = buildRoadWaypoints(edgeI, edgeJ, radius)
+
+      for (let leg = 0; leg < waypoints.length - 1; leg++) {
+        const legA = waypoints[leg]
+        const legB = waypoints[leg + 1]
+
+        for (let s = 0; s < ROAD_SEGMENTS; s++) {
+          const p0 = slerpUnit(legA, legB, s / ROAD_SEGMENTS)
+          const p1 = slerpUnit(legA, legB, (s + 1) / ROAD_SEGMENTS)
+          roads.push({
+            x1: p0[0] * radius,
+            y1: p0[1] * radius,
+            z1: p0[2] * radius,
+            x2: p1[0] * radius,
+            y2: p1[1] * radius,
+            z2: p1[2] * radius,
+          })
+        }
       }
     }
   }

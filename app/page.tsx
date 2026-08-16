@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import PlanetScene from '@/components/planet-scene'
 import ConnectButton from '@/components/connect-button'
+import DevSignInPanel from '@/components/dev-sign-in-panel'
 import { auth } from '@/lib/auth'
 import { planetRadius } from '@/lib/planet-builder'
 import { getPlanetCities, getPlanetRoads } from '@/lib/planet-service'
@@ -47,6 +48,7 @@ export default async function HomePage() {
                 (No cities have joined the planet yet.)
               </p>
             )}
+            {process.env.NODE_ENV === 'development' && <DevSignInPanel />}
           </div>
         </div>
       </PlanetScene>

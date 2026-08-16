@@ -14,6 +14,12 @@ import {
 import { prisma } from '@/lib/prisma'
 import type { CityData, PlanetCity } from '@/lib/types'
 
+export type DevCity = CityData & {
+  planetX: number | null
+  planetY: number | null
+  planetZ: number | null
+}
+
 // Two users clicking "join" concurrently each read a snapshot that doesn't
 // include the other's in-flight write, classic write skew across two
 // separate rows, which neither Postgres's default READ COMMITTED nor
@@ -54,6 +60,7 @@ export async function getPlanetRoads(cities: PlanetCity[]) {
     cities.map((c) => ({
       position: [c.planetX, c.planetY, c.planetZ] as Vec3,
       roads: c.roads,
+      extent: cityExtent(c.buildings),
     })),
     radius,
   )
@@ -134,6 +141,74 @@ export async function relocateCity(
 
     await tx.city.update({
       where: { userId },
+      data: { planetX: normalized[0], planetY: normalized[1], planetZ: normalized[2] },
+    })
+
+    return { ok: true }
+  })
+}
+
+// --- Dev-only tools below, every export re-checks NODE_ENV itself (not
+// just relying on callers to gate it) so nothing here can do anything in
+// production even if somehow reached. ---
+
+// Every city regardless of whether it's on the planet yet, for the dev
+// city-picker (which needs to offer placing a not-yet-joined city, not
+// just relocating an already-placed one) — getPlanetCities() above
+// deliberately only returns already-placed cities for the real UI.
+export async function getAllCitiesForDev(): Promise<DevCity[]> {
+  if (process.env.NODE_ENV !== 'development') return []
+  const rows = await prisma.city.findMany({ orderBy: { username: 'asc' } })
+  return rows.map((row) => ({
+    ...(row.data as unknown as CityData),
+    planetX: row.planetX,
+    planetY: row.planetY,
+    planetZ: row.planetZ,
+  }))
+}
+
+// The dev analogue of joinPlanet+relocateCity combined: sets *any* city's
+// planet position by username instead of the caller's own session, with no
+// ownership check, dev tooling needs to test placement/relocation for
+// cities the current dev session doesn't happen to own. Still runs the
+// same isValidPlacement check as the real flows, this is a shortcut around
+// the ownership restriction, not around the placement rules themselves —
+// otherwise it wouldn't be useful for testing those rules visually. Works
+// identically whether the target city is already on the planet or not,
+// since the "others" query already excludes it either way.
+export async function devSetCityPosition(
+  username: string,
+  candidate: Vec3,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (process.env.NODE_ENV !== 'development') return { ok: false, error: 'dev mode only' }
+
+  const len = Math.hypot(candidate[0], candidate[1], candidate[2])
+  if (len < 1e-6) return { ok: false, error: 'invalid position' }
+  const normalized: Vec3 = [candidate[0] / len, candidate[1] / len, candidate[2] / len]
+
+  return withSerializableRetry(async (tx) => {
+    const target = await tx.city.findFirst({
+      where: { username: { equals: username, mode: 'insensitive' } },
+    })
+    if (!target) return { ok: false, error: 'no city found for that username' }
+
+    const others = await tx.city.findMany({
+      where: { planetX: { not: null }, id: { not: target.id } },
+      select: { planetX: true, planetY: true, planetZ: true, data: true },
+    })
+    const existing: PlacedCity[] = others.map((o) => ({
+      position: [o.planetX!, o.planetY!, o.planetZ!],
+      extent: cityExtent((o.data as unknown as CityData).buildings),
+    }))
+    const candidateExtent = cityExtent((target.data as unknown as CityData).buildings)
+    const radius = planetRadius(existing.length + 1)
+
+    if (!isValidPlacement(normalized, candidateExtent, existing, radius)) {
+      return { ok: false, error: 'too close to another city or a natural feature' }
+    }
+
+    await tx.city.update({
+      where: { id: target.id },
       data: { planetX: normalized[0], planetY: normalized[1], planetZ: normalized[2] },
     })
 

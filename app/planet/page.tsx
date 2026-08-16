@@ -2,12 +2,18 @@ import Link from 'next/link'
 import PlanetScene from '@/components/planet-scene'
 import { auth } from '@/lib/auth'
 import { planetRadius } from '@/lib/planet-builder'
-import { getPlanetCities, getPlanetRoads } from '@/lib/planet-service'
+import { getAllCitiesForDev, getPlanetCities, getPlanetRoads } from '@/lib/planet-service'
 
 export const dynamic = 'force-dynamic'
 
+const isDev = process.env.NODE_ENV === 'development'
+
 export default async function PlanetPage() {
-  const [cities, session] = await Promise.all([getPlanetCities(), auth()])
+  const [cities, session, devCities] = await Promise.all([
+    getPlanetCities(),
+    auth(),
+    isDev ? getAllCitiesForDev() : Promise.resolve(undefined),
+  ])
   const radius = planetRadius(cities.length)
   const roads = await getPlanetRoads(cities)
 
@@ -18,6 +24,8 @@ export default async function PlanetPage() {
         radius={radius}
         roads={roads}
         viewerUsername={session?.user?.username ?? null}
+        devMode={isDev}
+        devCities={devCities}
       >
         <div className="pointer-events-none fixed inset-x-0 top-0 z-10 flex items-start justify-between p-6">
           <div className="polis-hud-panel pointer-events-auto px-4 py-3">

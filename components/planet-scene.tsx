@@ -13,7 +13,7 @@ import PlanetFeatures from '@/components/planet-features'
 import PlanetRoads from '@/components/planet-roads'
 import { cityExtent } from '@/lib/city-builder'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
-import { relocateCity } from '@/lib/planet-service'
+import { devSetCityPosition, relocateCity, type DevCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
 
 export default function PlanetScene({
@@ -21,42 +21,61 @@ export default function PlanetScene({
   radius,
   roads,
   viewerUsername,
+  devMode = false,
+  devCities,
   children,
 }: {
   cities: PlanetCityData[]
   radius: number
   roads: PlanetRoad[]
   viewerUsername: string | null
+  devMode?: boolean
+  devCities?: DevCity[]
   children?: React.ReactNode
 }) {
   const router = useRouter()
   const [hovered, setHovered] = useState<Building | null>(null)
   const [pointer, setPointer] = useState({ x: 0, y: 0 })
+  const [devTargetUsername, setDevTargetUsername] = useState<string | null>(null)
   const [placementMode, setPlacementMode] = useState(false)
   const [previewCandidate, setPreviewCandidate] = useState<Vec3 | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
-  const ownCity = useMemo(
-    () =>
-      viewerUsername
-        ? (cities.find((c) => c.username.toLowerCase() === viewerUsername.toLowerCase()) ?? null)
-        : null,
-    [cities, viewerUsername],
-  )
+  // In dev mode, the "active" city being placed/moved is whichever one the
+  // dev picker below has selected, standing in for the normal "only your
+  // own city" restriction, which still applies exactly as before once
+  // devMode is off (activeUsername just equals viewerUsername then).
+  const activeUsername = devMode && devTargetUsername ? devTargetUsername : viewerUsername
+
+  // Buildings/roads for the preview ghost need to come from devCities in
+  // dev mode, since the picker can target a city that isn't on the planet
+  // yet at all (and so isn't in `cities`, which only ever holds already-
+  // placed ones).
+  const activeCity = useMemo(() => {
+    if (!activeUsername) return null
+    const pool = devMode && devCities ? devCities : cities
+    return pool.find((c) => c.username.toLowerCase() === activeUsername.toLowerCase()) ?? null
+  }, [activeUsername, devMode, devCities, cities])
+
+  // In non-dev mode activeCity only ever comes from `cities` (already-
+  // placed cities by construction, see getPlanetCities), so this is
+  // trivially true there; in dev mode activeCity can be an unplaced
+  // DevCity, whose planetX is genuinely nullable.
+  const activeIsOnPlanet = Boolean(activeCity && activeCity.planetX !== null)
 
   const otherCities = useMemo(
     (): PlacedCity[] =>
       cities
-        .filter((c) => c.username.toLowerCase() !== viewerUsername?.toLowerCase())
+        .filter((c) => c.username.toLowerCase() !== activeUsername?.toLowerCase())
         .map((c) => ({
           position: [c.planetX, c.planetY, c.planetZ] as Vec3,
           extent: cityExtent(c.buildings),
         })),
-    [cities, viewerUsername],
+    [cities, activeUsername],
   )
 
-  const ownExtent = useMemo(() => (ownCity ? cityExtent(ownCity.buildings) : 0), [ownCity])
+  const activeExtent = useMemo(() => (activeCity ? cityExtent(activeCity.buildings) : 0), [activeCity])
 
   // The same OrbitControls setup as atlas's globe (components/enhanced-
   // globe.tsx in the atlas project): plain orbit around the sphere's true
@@ -80,7 +99,7 @@ export default function PlanetScene({
     // Instant client-side feedback using the same pure function and
     // positions already in props, the server re-validates authoritatively
     // regardless inside relocateCity's transaction, this check is UX only.
-    if (!isValidPlacement(candidate, ownExtent, otherCities, radius)) {
+    if (!isValidPlacement(candidate, activeExtent, otherCities, radius)) {
       setError('Too close to another city or a natural feature, try a different spot.')
       return
     }
@@ -90,9 +109,12 @@ export default function PlanetScene({
   }
 
   function confirmMove() {
-    if (!previewCandidate || pending) return
+    if (!previewCandidate || pending || !activeUsername) return
     startTransition(async () => {
-      const result = await relocateCity(previewCandidate)
+      const result =
+        devMode && devTargetUsername
+          ? await devSetCityPosition(devTargetUsername, previewCandidate)
+          : await relocateCity(previewCandidate)
       if (result.ok) {
         setPlacementMode(false)
         setPreviewCandidate(null)
@@ -154,9 +176,9 @@ export default function PlanetScene({
           />
         ))}
 
-        {previewCandidate && ownCity && (
+        {previewCandidate && activeCity && (
           <PlanetCityPreview
-            buildings={ownCity.buildings}
+            buildings={activeCity.buildings}
             candidate={previewCandidate}
             radius={radius}
           />
@@ -190,18 +212,43 @@ export default function PlanetScene({
         </div>
       )}
 
-      {ownCity && (
+      {(activeCity || (devMode && devCities)) && (
         <div className="pointer-events-none fixed inset-x-0 bottom-16 z-10 flex flex-col items-center gap-2">
           {error && (
             <p className="polis-hud-panel pointer-events-auto px-3 py-2 text-xs text-accent">
               {error}
             </p>
           )}
-          {placementMode ? (
-            previewCandidate ? (
+
+          {devMode && devCities && !placementMode && (
+            <div className="polis-hud-panel pointer-events-auto flex items-center gap-2 px-3 py-2">
+              <span className="text-xs uppercase tracking-widest text-accent">Dev</span>
+              <select
+                value={devTargetUsername ?? ''}
+                onChange={(e) => setDevTargetUsername(e.target.value || null)}
+                className="rounded border border-primary/30 bg-background/80 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+              >
+                <option value="">Select a city…</option>
+                {devCities.map((c) => (
+                  <option key={c.username} value={c.username}>
+                    {c.username} {c.planetX === null ? '(not on planet)' : ''}
+                  </option>
+                ))}
+              </select>
+              {activeCity && (
+                <button type="button" className="polis-btn" onClick={() => setPlacementMode(true)}>
+                  {activeIsOnPlanet ? 'Move this city' : 'Place this city'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {placementMode &&
+            activeCity &&
+            (previewCandidate ? (
               <div className="pointer-events-auto flex items-center gap-3">
                 <p className="polis-hud-panel px-3 py-2 text-xs text-foreground/70">
-                  Move your city here?
+                  {activeIsOnPlanet ? 'Move' : 'Place'} {activeUsername}&rsquo;s city here?
                 </p>
                 <button
                   type="button"
@@ -209,7 +256,7 @@ export default function PlanetScene({
                   disabled={pending}
                   onClick={confirmMove}
                 >
-                  {pending ? 'Moving…' : 'Confirm'}
+                  {pending ? 'Saving…' : 'Confirm'}
                 </button>
                 <button type="button" className="polis-btn" disabled={pending} onClick={cancelMove}>
                   Cancel
@@ -218,14 +265,16 @@ export default function PlanetScene({
             ) : (
               <div className="pointer-events-auto flex items-center gap-3">
                 <p className="polis-hud-panel px-3 py-2 text-xs text-foreground/70">
-                  Drag to look around. Click a spot to preview moving your city there.
+                  Drag to look around. Click a spot to preview{' '}
+                  {activeIsOnPlanet ? 'moving' : 'placing'} the city there.
                 </p>
                 <button type="button" className="polis-btn" onClick={cancelMove}>
                   Cancel
                 </button>
               </div>
-            )
-          ) : (
+            ))}
+
+          {!devMode && !placementMode && activeIsOnPlanet && (
             <button
               type="button"
               className="polis-btn pointer-events-auto"
