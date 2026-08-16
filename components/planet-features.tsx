@@ -3,12 +3,14 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { PLANET_FEATURES, featureRadius, type PlanetFeature } from '@/lib/planet-builder'
-import { buildCurvedFanGeometry, curveLocalPoint } from '@/lib/sphere-curve'
+import { buildCurvedFanGeometry, curvedLocalPlacement } from '@/lib/sphere-curve'
 
 const UP = new THREE.Vector3(0, 1, 0)
-const LAKE_COLOR = '#1a6ea8'
-const MOUNTAIN_COLOR = '#241f2e'
+const LAKE_COLOR = '#29e0ff'
+const MOUNTAIN_COLOR = '#2c2540'
 const SHORELINE_POINTS = 40
+const MOUNTAIN_RINGS = 5
+const MOUNTAIN_SPOKES = 20
 
 function useSurfaceTransform(feature: PlanetFeature, radius: number) {
   return useMemo(() => {
@@ -64,10 +66,80 @@ function Lake({ feature, radius, seed }: { feature: PlanetFeature; radius: numbe
   )
 }
 
-// A small cluster of cones, jittered by index (not Math.random(), so the
-// shape stays fixed for every visitor too), each base individually pulled
-// onto the sphere's curved surface, one mesh per cone is fine at this
-// scale (14 features, ~6 cones each).
+// Cheap 2D hash for per-vertex height jitter, seeded by ring/spoke/feature
+// index (not Math.random()) so the terrain stays fixed for every visitor.
+function hash2(i: number, j: number, seed: number): number {
+  const x = Math.sin(i * 127.1 + j * 311.7 + seed * 74.7) * 43758.5453
+  return x - Math.floor(x)
+}
+
+// A single broad, rounded rise across the whole feature footprint instead
+// of a cluster of sharp cone peaks — concentric rings from the apex out to
+// the edge, each ring's radius wobbled (same technique as the lake's
+// shoreline) and its height following a hemisphere-like profile
+// (`sqrt(1-t^2)`, full height at the center tapering smoothly to 0 at the
+// edge) plus mild per-vertex noise so it reads as an eroded hill, not a
+// perfect dome. Every vertex is placed via `curvedLocalPlacement`, which
+// both curves the (x, z) footprint onto the true sphere surface and adds
+// the height along *that point's own* local outward direction, not the
+// feature center's, the same correction the rest of this file already
+// relies on for anything larger than a single point.
+function buildMountainGeometry(
+  featureR: number,
+  maxHeight: number,
+  seed: number,
+  normal: THREE.Vector3,
+  radius: number,
+  quaternion: THREE.Quaternion,
+): THREE.BufferGeometry {
+  const positions: number[] = []
+
+  const apex = curvedLocalPlacement(0, maxHeight, 0, normal, radius, quaternion).position
+  positions.push(apex.x, apex.y, apex.z)
+
+  for (let ring = 1; ring <= MOUNTAIN_RINGS; ring++) {
+    const t = ring / MOUNTAIN_RINGS
+    const profile = Math.sqrt(Math.max(0, 1 - t * t))
+    for (let s = 0; s < MOUNTAIN_SPOKES; s++) {
+      const angle = (s / MOUNTAIN_SPOKES) * Math.PI * 2
+      const wobble =
+        1 + 0.16 * Math.sin(angle * 3 + seed * 1.7) + 0.1 * Math.sin(angle * 5 - seed * 2.2)
+      const r = featureR * t * wobble
+      const noise = (hash2(ring, s, seed) - 0.5) * maxHeight * 0.14 * (1 - t * 0.6)
+      const h = Math.max(0, maxHeight * profile + noise)
+      const x = Math.cos(angle) * r
+      const z = Math.sin(angle) * r
+      const p = curvedLocalPlacement(x, h, z, normal, radius, quaternion).position
+      positions.push(p.x, p.y, p.z)
+    }
+  }
+
+  const indices: number[] = []
+  for (let s = 0; s < MOUNTAIN_SPOKES; s++) {
+    const a = 1 + s
+    const b = 1 + ((s + 1) % MOUNTAIN_SPOKES)
+    indices.push(0, a, b)
+  }
+  for (let ring = 1; ring < MOUNTAIN_RINGS; ring++) {
+    const innerStart = 1 + (ring - 1) * MOUNTAIN_SPOKES
+    const outerStart = 1 + ring * MOUNTAIN_SPOKES
+    for (let s = 0; s < MOUNTAIN_SPOKES; s++) {
+      const i0 = innerStart + s
+      const i1 = innerStart + ((s + 1) % MOUNTAIN_SPOKES)
+      const o0 = outerStart + s
+      const o1 = outerStart + ((s + 1) % MOUNTAIN_SPOKES)
+      indices.push(i0, o0, o1)
+      indices.push(i0, o1, i1)
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setIndex(indices)
+  geometry.computeVertexNormals()
+  return geometry
+}
+
 function Mountain({
   feature,
   radius,
@@ -80,35 +152,15 @@ function Mountain({
   const { position, quaternion, normal } = useSurfaceTransform(feature, radius)
   const featureR = useMemo(() => featureRadius(feature, radius), [feature, radius])
 
-  const peaks = useMemo(() => {
-    const count = 5 + (seed % 3)
-    return Array.from({ length: count }, (_, i) => {
-      const angle = (i / count) * Math.PI * 2 + i * 0.7
-      const dist = featureR * 0.5 * ((i % 3) / 3 + 0.3)
-      const base = curveLocalPoint(
-        Math.cos(angle) * dist,
-        Math.sin(angle) * dist,
-        normal,
-        radius,
-        quaternion,
-      )
-      return {
-        base,
-        height: featureR * (0.5 + (i % 4) * 0.15),
-        peakRadius: featureR * 0.28,
-      }
-    })
-  }, [featureR, seed, normal, radius, quaternion])
+  const geometry = useMemo(
+    () => buildMountainGeometry(featureR, featureR * 0.55, seed, normal, radius, quaternion),
+    [featureR, seed, normal, radius, quaternion],
+  )
 
   return (
-    <group position={position} quaternion={quaternion}>
-      {peaks.map((p, i) => (
-        <mesh key={i} position={[p.base.x, p.base.y + p.height / 2, p.base.z]}>
-          <coneGeometry args={[p.peakRadius, p.height, 5]} />
-          <meshBasicMaterial color={MOUNTAIN_COLOR} toneMapped={false} />
-        </mesh>
-      ))}
-    </group>
+    <mesh geometry={geometry} position={position} quaternion={quaternion}>
+      <meshBasicMaterial color={MOUNTAIN_COLOR} toneMapped={false} side={THREE.DoubleSide} />
+    </mesh>
   )
 }
 

@@ -5,12 +5,13 @@ import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
-import CitySky from '@/components/city-sky'
 import Footer from '@/components/footer'
 import PlanetCity from '@/components/planet-city'
 import PlanetCityPreview from '@/components/planet-city-preview'
 import PlanetFeatures from '@/components/planet-features'
 import PlanetRoads from '@/components/planet-roads'
+import PlanetSky from '@/components/planet-sky'
+import PlanetSurface from '@/components/planet-surface'
 import { cityExtent } from '@/lib/city-builder'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { devSetCityPosition, relocateCity, type DevCity } from '@/lib/planet-service'
@@ -156,12 +157,9 @@ export default function PlanetScene({
         <ambientLight intensity={0.22} color="#4b2a6b" />
         <hemisphereLight args={['#2a1a40', '#050308', 0.35]} />
 
-        <CitySky />
+        <PlanetSky />
 
-        <mesh onClick={handlePlanetClick}>
-          <sphereGeometry args={[radius, 48, 32]} />
-          <meshBasicMaterial color="#0d0818" toneMapped={false} />
-        </mesh>
+        <PlanetSurface radius={radius} onClick={handlePlanetClick} />
 
         <PlanetFeatures radius={radius} />
         <PlanetRoads roads={roads} />
