@@ -15,7 +15,7 @@ import { prisma } from '@/lib/prisma'
 import type { CityData, PlanetCity } from '@/lib/types'
 
 // Two users clicking "join" concurrently each read a snapshot that doesn't
-// include the other's in-flight write — classic write skew across two
+// include the other's in-flight write, classic write skew across two
 // separate rows, which neither Postgres's default READ COMMITTED nor
 // REPEATABLE READ (snapshot isolation) actually prevents. SERIALIZABLE
 // detects it and aborts one side; retry on Prisma's write-conflict code.
@@ -51,7 +51,10 @@ export async function getPlanetCities(): Promise<PlanetCity[]> {
 export async function getPlanetRoads(cities: PlanetCity[]) {
   const radius = planetRadius(cities.length)
   return buildPlanetRoads(
-    cities.map((c) => [c.planetX, c.planetY, c.planetZ] as Vec3),
+    cities.map((c) => ({
+      position: [c.planetX, c.planetY, c.planetZ] as Vec3,
+      roads: c.roads,
+    })),
     radius,
   )
 }
@@ -93,11 +96,11 @@ export async function joinPlanet(): Promise<
 }
 
 // Called directly from planet-scene.tsx's click handler (a Client
-// Component) — the file-level 'use server' directive above makes every
+// Component), the file-level 'use server' directive above makes every
 // export here a proper Server Action, callable across the client/server
 // boundary without a <form>. (Next requires the whole-file directive, not
 // a per-function inline one, once any Client Component imports from this
-// module — getPlanetCities/getPlanetRoads/joinPlanet still work exactly
+// module, getPlanetCities/getPlanetRoads/joinPlanet still work exactly
 // the same calling them directly from Server Components.)
 export async function relocateCity(
   candidate: Vec3,

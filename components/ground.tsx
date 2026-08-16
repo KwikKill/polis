@@ -8,7 +8,7 @@ import type { Road } from '@/lib/types'
 
 const MAX_STREETLIGHTS = 60
 const MIN_ROAD_LENGTH_FOR_LIGHT = 1.5
-const STREETLIGHT_OFFSET = 0.45 // perpendicular offset from the road centerline — the "sidewalk"
+const STREETLIGHT_OFFSET = 0.45 // perpendicular offset from the road centerline, the "sidewalk"
 
 const ROAD_WIDTH = 0.55
 const ROAD_HEIGHT = 0.05
@@ -92,7 +92,7 @@ function streetlightsAlongRoads(roads: Road[]): Point[] {
   return shuffleAndCap(candidates, MAX_STREETLIGHTS)
 }
 
-// A couple of parked-looking blocks along wider gaps — cheap street-level
+// A couple of parked-looking blocks along wider gaps, cheap street-level
 // life, same technique as the streetlights but on the opposite shoulder.
 function vehiclesAlongRoads(roads: Road[]): Vehicle[] {
   const candidates: Vehicle[] = []
@@ -138,7 +138,7 @@ const yawScratch = new THREE.Quaternion()
 // exactly as before (zero-diff for the flat /u/[username] page). With it,
 // look up that instance's *own* corrected surface point and "standing up
 // straight" direction (curvedLocalPlacement) instead of the whole city's
-// single shared tangent-plane orientation — a prop out near a large city's
+// single shared tangent-plane orientation, a prop out near a large city's
 // edge otherwise both floats off the true sphere and stands tilted to the
 // city center's normal rather than its own.
 function placeDummy(
@@ -196,7 +196,7 @@ function RoadField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCur
   )
 }
 
-// A shoulder strip on each side of every road — the difference between "a
+// A shoulder strip on each side of every road, the difference between "a
 // coloured line" and "a street with a curb," cheap detail around the roads.
 function SidewalkField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCurvature }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
@@ -269,14 +269,14 @@ function VehicleField({ vehicles, curvature }: { vehicles: Vehicle[]; curvature?
   )
 }
 
-// Wet-asphalt reflection (Blade Runner), plus a road network — the Voronoi
+// Wet-asphalt reflection (Blade Runner), plus a road network, the Voronoi
 // cell boundary of every building, so streets run through the real gaps
-// between buildings — with sidewalks, streetlights and parked vehicles
+// between buildings, with sidewalks, streetlights and parked vehicles
 // layered along it.
 //
 // `reflective`/`groundRadius` exist for the planet view, where many full
 // cities render at once: MeshReflectorMaterial is a real extra scene
-// render from a mirrored camera every frame, per instance — unlike more
+// render from a mirrored camera every frame, per instance, unlike more
 // InstancedMesh triangles (cheap to batch), that cost doesn't batch and
 // stacks linearly with city count. Set reflective={false} there to swap
 // the reflection for a flat matte disc sized to that city's own footprint,

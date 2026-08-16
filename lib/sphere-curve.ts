@@ -15,15 +15,13 @@ export interface SurfaceCurvature {
 // Given a point in a tangent plane's local coordinates (the same local
 // space used inside a <group position={normal*radius}
 // quaternion={Quaternion.setFromUnitVectors(UP, normal)}> wrapper), return
-// the corresponding point pulled onto the sphere's true curved surface,
-// still expressed in that same local space — drops straight into existing
-// per-vertex geometry without needing to bypass the group's transform. A
-// flat local point increasingly diverges from the sphere as it moves away
-// from the tangent contact point (became visible once features got large
-// enough for the gap to show, edges "floating" above/below the surface);
-// this undoes that by re-normalizing the corresponding world point and
-// converting back to local space.
-export function curveLocalPoint(
+// the corresponding point pulled onto the sphere's true curved surface, in
+// absolute world space (i.e. still centered on the planet's own origin, not
+// re-expressed relative to the sticker group). Used anywhere a curved point
+// is needed *outside* of a per-sticker group's own transform, e.g. finding
+// where a city's road network actually touches the sphere so an inter-city
+// road can meet it there instead of just aiming at the city's center point.
+export function curveWorldPoint(
   x: number,
   z: number,
   normal: THREE.Vector3,
@@ -33,20 +31,40 @@ export function curveLocalPoint(
   const tangentPoint = normal.clone().multiplyScalar(planetRadius)
   const flatOffset = new THREE.Vector3(x, 0, z).applyQuaternion(quaternion)
   const flatWorld = tangentPoint.clone().add(flatOffset)
-  const curvedWorld = flatWorld.normalize().multiplyScalar(planetRadius)
+  return flatWorld.normalize().multiplyScalar(planetRadius)
+}
+
+// Same point, but converted back into the tangent plane's own local space,
+// the same local space used inside a <group position={normal*radius}
+// quaternion={Quaternion.setFromUnitVectors(UP, normal)}> wrapper, drops
+// straight into existing per-vertex geometry without needing to bypass the
+// group's transform. A flat local point increasingly diverges from the
+// sphere as it moves away from the tangent contact point (became visible
+// once features got large enough for the gap to show, edges "floating"
+// above/below the surface); this undoes that by re-normalizing the
+// corresponding world point and converting back to local space.
+export function curveLocalPoint(
+  x: number,
+  z: number,
+  normal: THREE.Vector3,
+  planetRadius: number,
+  quaternion: THREE.Quaternion,
+): THREE.Vector3 {
+  const tangentPoint = normal.clone().multiplyScalar(planetRadius)
+  const curvedWorld = curveWorldPoint(x, z, normal, planetRadius, quaternion)
   return curvedWorld.sub(tangentPoint).applyQuaternion(quaternion.clone().invert())
 }
 
 // The per-instance analogue of curveLocalPoint, for InstancedMesh "dummy"
 // placement (position + a tilt quaternion) instead of raw geometry
-// vertices — used for props scattered across a city's footprint (building
+// vertices, used for props scattered across a city's footprint (building
 // walls, trim, windows, roof clutter, roads, sidewalks, vehicles,
 // streetlights) that each need their *own* corrected position and
 // "standing up straight" orientation, not just the single shared
 // tangent-plane quaternion the whole city group uses. Without this, a prop
 // out near a large city's edge both floats off the true surface (the same
 // gap curveLocalPoint fixes for the ground disc) *and* stands tilted at
-// the city-center's normal instead of its own — most visible for the
+// the city-center's normal instead of its own, most visible for the
 // biggest cities, where extent is no longer negligible next to the
 // planet's radius.
 export interface CurvedPlacement {
@@ -78,7 +96,7 @@ export function curvedLocalPlacement(
 }
 
 // A disc built from curved vertices instead of CircleGeometry's flat ones
-// — the ground plate under a city, following the planet's true curvature
+//, the ground plate under a city, following the planet's true curvature
 // instead of the flat tangent plane.
 export function buildCurvedDiscGeometry(
   discRadius: number,
@@ -111,7 +129,7 @@ export function buildCurvedDiscGeometry(
 }
 
 // Same idea from an arbitrary (possibly irregular) outline of local (x, z)
-// points around a center, rather than a perfect circle — used for the
+// points around a center, rather than a perfect circle, used for the
 // lakes' non-circular shoreline.
 export function buildCurvedFanGeometry(
   outline: Array<[number, number]>,

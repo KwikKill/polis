@@ -23,12 +23,12 @@ function useSurfaceTransform(feature: PlanetFeature, radius: number) {
   }, [feature, radius])
 }
 
-// An organic shoreline, not a perfect circle — two gentle sine harmonics
+// An organic shoreline, not a perfect circle, two gentle sine harmonics
 // perturbing the radius at each angle, seeded by the feature's own index
 // (not Math.random()) so the shape is exactly as fixed/shared as its
 // position. Kept deliberately mild: stacking more/higher-frequency
 // harmonics at real amplitude looks like a spiky pinwheel once triangulated
-// as a fan from the center, not an organic shoreline — a lake's radius
+// as a fan from the center, not an organic shoreline, a lake's radius
 // should wander, not slam between near-zero and 1.4x every couple samples.
 function lakeShapePoints(baseRadius: number, seed: number): Array<[number, number]> {
   const points: Array<[number, number]> = []
@@ -66,7 +66,7 @@ function Lake({ feature, radius, seed }: { feature: PlanetFeature; radius: numbe
 
 // A small cluster of cones, jittered by index (not Math.random(), so the
 // shape stays fixed for every visitor too), each base individually pulled
-// onto the sphere's curved surface — one mesh per cone is fine at this
+// onto the sphere's curved surface, one mesh per cone is fine at this
 // scale (14 features, ~6 cones each).
 function Mountain({
   feature,
@@ -112,7 +112,7 @@ function Mountain({
   )
 }
 
-// Fixed natural landmarks — same set, same positions, for every visitor
+// Fixed natural landmarks, same set, same positions, for every visitor
 // (see PLANET_FEATURES). They also carve out exclusion zones in
 // isValidPlacement, so a city can never actually land on top of one.
 export default function PlanetFeatures({ radius }: { radius: number }) {

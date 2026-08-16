@@ -9,7 +9,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     GitHub({
       clientId: process.env.GITHUB_CLIENT_ID,
       clientSecret: process.env.GITHUB_CLIENT_SECRET,
-      // Public data only — no `repo` scope, we never touch private repos.
+      // Public data only, no `repo` scope, we never touch private repos.
       authorization: { params: { scope: 'read:user' } },
       profile(profile) {
         return {

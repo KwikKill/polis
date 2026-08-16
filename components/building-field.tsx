@@ -36,7 +36,7 @@ const yawScratch = new THREE.Quaternion()
 // individual wall/trim bar/window/roof prop/tier gets *its own* corrected
 // surface point and "standing up straight" tilt (curvedLocalPlacement)
 // rather than inheriting one shared orientation from the city's own
-// tangent-plane group — at real planet scale a big city's buildings
+// tangent-plane group, at real planet scale a big city's buildings
 // otherwise both float off the true sphere near the city's edge and all
 // lean at the same angle instead of each standing normal to the surface
 // under it.
@@ -92,21 +92,21 @@ interface Tier {
 }
 
 // Bloom (see city-scene.tsx) reacts to raw pixel luminance, not a material's
-// `emissive` channel specifically — so "glow" here just means pushing the
+// `emissive` channel specifically, so "glow" here just means pushing the
 // instance color past 1.0 with toneMapped=false on an *unlit* material.
 // meshStandardMaterial was used before, but its diffuse output still scales
-// with the scene's (deliberately dim, night-ambient) light — under that
+// with the scene's (deliberately dim, night-ambient) light, under that
 // lighting a scaled-up albedo can still render under the bloom threshold.
 // meshBasicMaterial sidesteps that: the instance color IS the pixel color.
 //
-// Being fully unlit loses all directional shading though — every face
+// Being fully unlit loses all directional shading though, every face
 // renders as one flat color, which reads as a cartoon block rather than a
 // building. `shadedBoxGeometry` bakes a fixed per-face brightness (like
 // static ambient occlusion) as vertex colors so the volume still reads
 // correctly regardless of scene lighting, while the *instance* color stays
-// deliberately restrained — most of a building's glow should come from its
+// deliberately restrained, most of a building's glow should come from its
 // edge trim and windows, not the walls themselves blowing out.
-// Range compressed vs. what you'd use on a bright material — bodyColor's
+// Range compressed vs. what you'd use on a bright material, bodyColor's
 // lightness is now deliberately low, so multiplying by anything much
 // smaller than ~0.55 crushes the dim faces to indistinguishable black.
 const FACE_SHADE = [0.85, 0.7, 1, 0.55, 0.9, 0.65] // +x, -x, +y, -y, +z, -z
@@ -129,11 +129,11 @@ function shadedBoxGeometry(): THREE.BoxGeometry {
 
 const hslScratch = { h: 0, s: 0, l: 0 }
 
-// The "fluorescent toy block" look wasn't really a brightness problem —
+// The "fluorescent toy block" look wasn't really a brightness problem,
 // scaling a fully-saturated hex color by <1 just makes a darker version of
 // the same saturated hue, it doesn't make it read as a material. Pulling
 // *saturation* down (keeping only a hint of the language hue) and clamping
-// lightness low gives a dark, muted structural volume instead — the
+// lightness low gives a dark, muted structural volume instead, the
 // language color's job becomes the edge trim and windows, not the walls.
 function bodyColor(b: Building): THREE.Color {
   new THREE.Color(b.color).getHSL(hslScratch)
@@ -172,7 +172,7 @@ function buildWindows(buildings: Building[]): WindowInstance[] {
   return windows
 }
 
-// AC units, tanks, vents — the rooftop clutter real buildings have instead
+// AC units, tanks, vents, the rooftop clutter real buildings have instead
 // of a perfectly clean flat top. Neutral utility color, not tied to the
 // building's own language hue, since these read as infrastructure.
 function buildRoofProps(buildings: Building[]): RoofProp[] {
@@ -284,7 +284,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
     forkMesh.current.instanceMatrix.needsUpdate = true
   }, [forks, curvature])
 
-  // Four thin glowing corner bars per building — the actual Tron-style
+  // Four thin glowing corner bars per building, the actual Tron-style
   // "glowing edges on a dark volume" look; the body color alone (however
   // bright) still reads as a flat box without this.
   useLayoutEffect(() => {
@@ -393,7 +393,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
         </instancedMesh>
       )}
 
-      {/* Forks get a small "prefab" cap — a modular block bolted on top,
+      {/* Forks get a small "prefab" cap, a modular block bolted on top,
           distinct from an original repo's clean single volume. */}
       {forks.length > 0 && (
         <instancedMesh ref={forkMesh} args={[undefined, undefined, forks.length]}>
@@ -402,7 +402,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
         </instancedMesh>
       )}
 
-      {/* Rooftop beacons on the top-starred repos — cheap, low count, not instanced. */}
+      {/* Rooftop beacons on the top-starred repos, cheap, low count, not instanced. */}
       {landmarks.map((b) => (
         <LandmarkBeacon key={b.repoName} building={b} curvature={curvature} />
       ))}

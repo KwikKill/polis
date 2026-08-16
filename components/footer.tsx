@@ -1,4 +1,4 @@
-// Matches the credit-line convention used by amphion/athena — small muted
+// Matches the credit-line convention used by amphion/athena, small muted
 // copyright + "Made by" linking back to the main portfolio. Polis is a
 // fullscreen scene rather than a scrolling page, so it's pinned to the
 // bottom as part of the HUD chrome instead of sitting in normal doc flow.

@@ -60,11 +60,11 @@ async function fetchLanguages(
 }
 
 // GitHub's /stats/commit_activity is a cached, async endpoint: on a cold
-// cache (the common case — the first time anyone's queried a given repo) it
+// cache (the common case, the first time anyone's queried a given repo) it
 // returns 202 while it computes, which routinely takes longer than is
 // reasonable to block city generation on, so callers landed on a silent 0
 // far too often. Instead, ask for exactly one commit per page and read the
-// total off the last page number in the pagination `Link` header — a single
+// total off the last page number in the pagination `Link` header, a single
 // synchronous request with no warm-up, and it covers full history rather
 // than just the last 52 weeks.
 async function fetchCommitCount(owner: string, repo: string, token?: string): Promise<number> {

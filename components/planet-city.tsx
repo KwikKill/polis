@@ -10,14 +10,14 @@ import type { Building, PlanetCity as PlanetCityData } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
 
-// A city, "stuck" onto a point on the planet's surface — its local origin
+// A city, "stuck" onto a point on the planet's surface, its local origin
 // sits at unitVector*radius, and the wrapping group is rotated so local +Y
 // matches the outward normal there. Both BuildingField and Ground get the
 // same `curvature` (this city's own normal/quaternion/radius), so every
 // wall, road, sidewalk, vehicle and streetlight is individually pulled onto
 // the sphere's true surface and tilted to stand normal to it there, instead
 // of all inheriting one flat tangent-plane orientation shared by the whole
-// city — at real planet scale a big city's own extent is no longer
+// city, at real planet scale a big city's own extent is no longer
 // negligible next to the planet's radius, so that flat approximation showed
 // up as buildings/roads visibly floating off the surface near a city's
 // edge, not just the ground disc beneath them.

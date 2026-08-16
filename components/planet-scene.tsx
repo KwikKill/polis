@@ -63,7 +63,7 @@ export default function PlanetScene({
   // center (the default `target`, never overridden), no pan, distance
   // clamped to a margin just above the surface up to a few radii out.
   // Atlas starts pulled back at 3x its fixed radius (camera.position.z =
-  // 300 against a radius-100 Earth) rather than hugging the surface —
+  // 300 against a radius-100 Earth) rather than hugging the surface,
   // ported here as the same ratio scaled to the current planetRadius,
   // since a fixed close offset was the earlier design and specifically
   // what read as broken.
@@ -78,10 +78,10 @@ export default function PlanetScene({
     const candidate: Vec3 = [e.point.x / len, e.point.y / len, e.point.z / len]
 
     // Instant client-side feedback using the same pure function and
-    // positions already in props — the server re-validates authoritatively
+    // positions already in props, the server re-validates authoritatively
     // regardless inside relocateCity's transaction, this check is UX only.
     if (!isValidPlacement(candidate, ownExtent, otherCities, radius)) {
-      setError('Too close to another city or a natural feature — try a different spot.')
+      setError('Too close to another city or a natural feature, try a different spot.')
       return
     }
 
@@ -125,7 +125,7 @@ export default function PlanetScene({
         }}
         gl={{ antialias: true }}
       >
-        {/* Density scales as ~1/radius, not a fixed value — atlas's orbit
+        {/* Density scales as ~1/radius, not a fixed value, atlas's orbit
             camera ranges from just above the surface out to several planet
             radii, unlike the earlier fixed close-up framing this replaced,
             so a flat density either does nothing up close or fogs out the

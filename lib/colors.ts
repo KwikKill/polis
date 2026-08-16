@@ -21,7 +21,7 @@ export const LANGUAGE_COLORS: Record<string, string> = {
   Dockerfile: '#00E5FF',
 }
 
-export const FALLBACK_LANGUAGE_COLOR = '#8A2BE2' // ambient violet — unlisted languages blend in rather than clash
+export const FALLBACK_LANGUAGE_COLOR = '#8A2BE2' // ambient violet, unlisted languages blend in rather than clash
 
 export function getLanguageColor(language: string | null): string {
   if (!language) return FALLBACK_LANGUAGE_COLOR

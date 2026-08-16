@@ -1,4 +1,4 @@
-# Production Dockerfile — multi-stage build producing a Next.js standalone image.
+# Production Dockerfile, multi-stage build producing a Next.js standalone image.
 FROM node:22-alpine AS base
 RUN apk add --no-cache libc6-compat openssl && corepack enable
 
@@ -34,7 +34,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 # `prisma migrate deploy` needs the full CLI (a devDependency, so it isn't
-# part of the standalone trace) — overwrite the pruned node_modules with the
+# part of the standalone trace), overwrite the pruned node_modules with the
 # full builder one rather than fight pnpm's symlinked store to cherry-pick it.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 

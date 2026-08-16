@@ -11,7 +11,7 @@ const ROAD_COLOR = '#9d1fb8'
 // Same instanced-box-per-segment idiom as the flat city's RoadField, but
 // oriented in full 3D (outward normal at the segment as "up," rather than
 // RoadField's flat-ground Y-only atan2 rotation) since planet roads aren't
-// coplanar — each short segment approximates one curved great-circle-ish
+// coplanar, each short segment approximates one curved great-circle-ish
 // connection between two nearby cities (see buildPlanetRoads).
 export default function PlanetRoads({ roads }: { roads: PlanetRoad[] }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)

@@ -1,20 +1,24 @@
-import type { PlanetRoad } from '@/lib/types'
+import * as THREE from 'three'
+import { curveWorldPoint } from '@/lib/sphere-curve'
+import type { PlanetRoad, Road } from '@/lib/types'
+
+const UP = new THREE.Vector3(0, 1, 0)
 
 export type Vec3 = [number, number, number]
 
-// radius = BASE + GROWTH * sqrt(N) — same "more items needs more room"
+// radius = BASE + GROWTH * sqrt(N), same "more items needs more room"
 // shape already used for the single city's spiral radius. Only
 // approximately tuned now that required spacing depends on each city's own
-// size rather than one flat constant (see SECURITY_MARGIN below) — good
+// size rather than one flat constant (see SECURITY_MARGIN below), good
 // enough as a starting scale, adjust by eye if placement starts struggling
 // at typical city sizes.
 const PLANET_BASE_RADIUS = 120
 const PLANET_GROWTH = 35
 // Extra clearance beyond two cities' (or a city's and a feature's) own
-// touching extents — not a flat separation distance on its own, since a
+// touching extents, not a flat separation distance on its own, since a
 // tiny and a huge city need very different gaps to avoid actually
 // overlapping. Kept small on purpose: this is a buffer against actual
-// overlap, not a stylistic gap — a bigger value reads as "placement is
+// overlap, not a stylistic gap, a bigger value reads as "placement is
 // weirdly far from everything."
 const SECURITY_MARGIN = 6
 const MAX_PLACEMENT_ATTEMPTS = 500
@@ -30,7 +34,7 @@ export interface PlanetFeature {
   kind: 'lake' | 'mountain'
   position: Vec3
   // Fraction of the *current* planet radius, not an absolute world-unit
-  // size — the planet grows as cities join, and a fixed-size lake would
+  // size, the planet grows as cities join, and a fixed-size lake would
   // shrink relative to it over time. Use featureRadius() to resolve this
   // against a specific radius.
   radiusFraction: number
@@ -41,7 +45,7 @@ export function featureRadius(feature: PlanetFeature, radius: number): number {
 }
 
 // A city's own position + the actual reach of its buildings (city-builder
-// .ts's cityExtent) — placement needs the real footprint, not just a
+// .ts's cityExtent), placement needs the real footprint, not just a
 // center point, or a big city's buildings can end up sitting in a lake
 // its center point was technically clear of.
 export interface PlacedCity {
@@ -52,7 +56,7 @@ export interface PlacedCity {
 const FEATURE_COUNT = 14
 const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
 
-// A Fibonacci lattice on the sphere — deterministic and evenly spread, no
+// A Fibonacci lattice on the sphere, deterministic and evenly spread, no
 // Math.random() anywhere in it, so every visitor sees lakes and mountains
 // in exactly the same places (a fixed, shared landmark set, not decor that
 // differs per page load).
@@ -68,7 +72,7 @@ export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COU
   return {
     kind,
     position: fibonacciSpherePoint(i, FEATURE_COUNT),
-    // Fractions of the *current* planetRadius(), resolved at use time — see
+    // Fractions of the *current* planetRadius(), resolved at use time, see
     // featureRadius() and its doc comment above. Kept in the same range as
     // a typical city's own extent (a large city runs maybe 10-15% of the
     // radius) so lakes read as landmarks among the cities, not as a feature
@@ -101,7 +105,7 @@ export function chordDistSq(a: Vec3, b: Vec3): number {
 
 // A candidate is valid only if its own footprint (extent) plus a security
 // margin clears every other city's *actual* footprint, and every natural
-// feature's footprint — not just a fixed distance between center points,
+// feature's footprint, not just a fixed distance between center points,
 // which let a large city's buildings reach into a lake its center was
 // technically clear of.
 export function isValidPlacement(
@@ -125,7 +129,7 @@ export function isValidPlacement(
 }
 
 // Bounded rejection sampling for a spot clear of every existing city's
-// footprint and every natural feature. Always returns a position — on the
+// footprint and every natural feature. Always returns a position, on the
 // rare exhaustion of MAX_PLACEMENT_ATTEMPTS (the growth constants are
 // tuned to make this vanishingly unlikely), soft-degrades to whichever
 // candidate maximized the minimum distance to every neighboring city,
@@ -156,7 +160,7 @@ export function findValidPlacement(
 
 // Spherical linear interpolation between two unit vectors, via
 // Gram-Schmidt orthonormalization rather than the more common
-// sin-weighted-sum form — avoids a division-by-sin(theta) singularity when
+// sin-weighted-sum form, avoids a division-by-sin(theta) singularity when
 // a and b are nearly identical.
 export function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   const dot = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))
@@ -177,26 +181,83 @@ export function slerpUnit(a: Vec3, b: Vec3, t: number): Vec3 {
   return [a[0] * cosT + rx * sinT, a[1] * cosT + ry * sinT, a[2] * cosT + rz * sinT]
 }
 
+// What buildPlanetRoads needs from each city: its placement, plus its own
+// local road network, so an inter-city connection can meet an actual road
+// end instead of just aiming at the city's center point.
+export interface PlanetCityRoadInfo {
+  position: Vec3
+  roads: Road[]
+}
+
+// The point where a city's own road network actually reaches furthest
+// toward a neighboring city, on the true curved sphere surface, as a unit
+// vector, resolves to the city's own center if it has no roads at all (e.g.
+// a single-building city has none, city-builder.ts's Voronoi construction
+// needs at least a couple of buildings to produce any edges).
+//
+// "Furthest toward" is every one of the city's road endpoints (in its own
+// local x/z), scored by dot product against the neighbor's direction
+// projected into this city's own tangent plane, and the highest-scoring
+// endpoint wins, the same technique curvedLocalPlacement uses to find a
+// prop's own corrected surface point, just applied to picking a point
+// instead of placing one.
+function cityEdgePoint(city: PlanetCityRoadInfo, towardPosition: Vec3, radius: number): Vec3 {
+  if (city.roads.length === 0) return city.position
+
+  const normal = new THREE.Vector3(...city.position).normalize()
+  const quaternion = new THREE.Quaternion().setFromUnitVectors(UP, normal)
+  const selfWorld = normal.clone().multiplyScalar(radius)
+  const towardWorld = new THREE.Vector3(...towardPosition).multiplyScalar(radius)
+  const localDirection = towardWorld.sub(selfWorld).applyQuaternion(quaternion.clone().invert())
+
+  let bestX = 0
+  let bestZ = 0
+  let bestDot = -Infinity
+  for (const r of city.roads) {
+    for (const [x, z] of [
+      [r.x1, r.z1],
+      [r.x2, r.z2],
+    ]) {
+      const dot = x * localDirection.x + z * localDirection.z
+      if (dot > bestDot) {
+        bestDot = dot
+        bestX = x
+        bestZ = z
+      }
+    }
+  }
+
+  const worldPoint = curveWorldPoint(bestX, bestZ, normal, radius, quaternion)
+  return [worldPoint.x / radius, worldPoint.y / radius, worldPoint.z / radius]
+}
+
 // "Roads between nearby cities" as a K-nearest-neighbor graph (union, not
-// mutual — a city connects to its K nearest, and an edge exists if either
+// mutual, a city connects to its K nearest, and an edge exists if either
 // endpoint claims the other), not a spherical Voronoi/Delaunay diagram.
 // Planet cities are sparse, unevenly-distributed points; a full spherical
 // Delaunay triangulation of a sparse point set produces long edges
-// reaching across empty space just to stay valid — the opposite of
+// reaching across empty space just to stay valid, the opposite of
 // "nearby." KNN is the more literal match, and avoids depending on
 // d3-geo-voronoi, which ships no TypeScript types and has no @types
 // package (checked: `npm view d3-geo-voronoi types` is empty and
-// `@types/d3-geo-voronoi` 404s) — the exact cost d3-delaunay was already
+// `@types/d3-geo-voronoi` 404s), the exact cost d3-delaunay was already
 // chosen over raw delaunator to avoid for the flat-city case.
-export function buildPlanetRoads(cities: Vec3[], radius: number): PlanetRoad[] {
+//
+// Neighbor selection itself still uses each city's *center* (that's about
+// which cities count as "nearby" at all); only the rendered path changes,
+// running from the road-network edge of one city to the road-network edge
+// of the other rather than center to center, so it reads as a highway
+// continuing an actual street instead of a line hovering over rooftops.
+export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): PlanetRoad[] {
   if (cities.length < 2) return []
 
   const n = cities.length
+  const positions = cities.map((c) => c.position)
   const neighborSets: Set<number>[] = cities.map(() => new Set())
 
   for (let i = 0; i < n; i++) {
-    const distances = cities
-      .map((pos, j) => ({ j, d: i === j ? Infinity : chordDistSq(cities[i], pos) }))
+    const distances = positions
+      .map((pos, j) => ({ j, d: i === j ? Infinity : chordDistSq(positions[i], pos) }))
       .sort((a, b) => a.d - b.d)
 
     for (const { j, d } of distances.slice(0, KNN_K)) {
@@ -213,9 +274,12 @@ export function buildPlanetRoads(cities: Vec3[], radius: number): PlanetRoad[] {
       if (seen.has(key)) continue
       seen.add(key)
 
+      const edgeI = cityEdgePoint(cities[i], positions[j], radius)
+      const edgeJ = cityEdgePoint(cities[j], positions[i], radius)
+
       for (let s = 0; s < ROAD_SEGMENTS; s++) {
-        const p0 = slerpUnit(cities[i], cities[j], s / ROAD_SEGMENTS)
-        const p1 = slerpUnit(cities[i], cities[j], (s + 1) / ROAD_SEGMENTS)
+        const p0 = slerpUnit(edgeI, edgeJ, s / ROAD_SEGMENTS)
+        const p1 = slerpUnit(edgeI, edgeJ, (s + 1) / ROAD_SEGMENTS)
         roads.push({
           x1: p0[0] * radius,
           y1: p0[1] * radius,

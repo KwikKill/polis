@@ -8,7 +8,7 @@ import type { Vec3 } from '@/lib/planet-builder'
 const UP = new THREE.Vector3(0, 1, 0)
 const PREVIEW_COLOR = '#7ee8ff'
 
-// A translucent ghost of the viewer's own buildings at a candidate spot —
+// A translucent ghost of the viewer's own buildings at a candidate spot,
 // deliberately simplified (one flat-colored InstancedMesh, not the full
 // BuildingField layer stack) so it reads clearly as "not committed yet"
 // rather than a second full-detail city, and so it doesn't need opacity

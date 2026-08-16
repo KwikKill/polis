@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 
 // Meant to be called from an external cron (see README) to keep published
 // cities from going stale, reusing each owner's already-stored GitHub OAuth
-// token — no server-side PAT needed. Pass { "username": "..." } to refresh
+// token, no server-side PAT needed. Pass { "username": "..." } to refresh
 // a single city, or an empty body to refresh all of them.
 export async function POST(request: Request) {
   const secret = request.headers.get('authorization')?.replace('Bearer ', '')

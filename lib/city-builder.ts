@@ -2,7 +2,7 @@ import { Delaunay } from 'd3-delaunay'
 import { getLanguageColor } from '@/lib/colors'
 import type { Building, CityData, District, RepoData, Road } from '@/lib/types'
 
-// Low-discrepancy fill *within* a district's angular wedge — the golden
+// Low-discrepancy fill *within* a district's angular wedge, the golden
 // angle only gives even coverage across a full 2π circle, so a bounded
 // slice needs the 1D analogue: the fractional parts of i * (golden ratio
 // conjugate) fill [0, 1) evenly without periodic clumping.
@@ -29,7 +29,7 @@ function normalizedLog(value: number, max: number): number {
   return Math.log(value + 1) / Math.log(max + 1)
 }
 
-// How far this city's own buildings actually reach from its local origin —
+// How far this city's own buildings actually reach from its local origin,
 // the real footprint size, used wherever something needs to know "how much
 // room does this city need" (the planet's ground-disc sizing, and its
 // placement collision checks) rather than a one-size-fits-all constant.
@@ -38,7 +38,7 @@ export function cityExtent(buildings: Building[]): number {
 }
 
 // The sunflower spiral only guarantees *even density*, not that two
-// same-index-neighbours' footprints don't overlap — a wide building next to
+// same-index-neighbours' footprints don't overlap, a wide building next to
 // another wide one can still collide. Relax the layout with a few passes of
 // simple circle-based separation, nudging overlapping pairs apart. Cheap
 // enough to run as plain O(n²) for city-sized counts (<=MAX_REPOS repos).
@@ -93,8 +93,8 @@ function onBoundsRect(
 }
 
 // The Voronoi diagram is the dual of the Delaunay triangulation: its edges
-// are exactly the lines equidistant between neighbouring buildings — i.e.
-// the actual gaps between them — rather than lines connecting building
+// are exactly the lines equidistant between neighbouring buildings, i.e.
+// the actual gaps between them, rather than lines connecting building
 // centers through the buildings themselves. Each building's Voronoi cell
 // is effectively its own plot; the network of cell boundaries reads as a
 // street grid the buildings sit *beside*, not a web radiating out of them.
@@ -126,7 +126,7 @@ function buildRoads(buildings: Building[]): Road[] {
       const [x2, z2] = cell[(k + 1) % cell.length]
 
       // Skip the outer frame introduced by clipping unbounded cells to
-      // `bounds` — it's not a real street, just where the diagram was cut.
+      // `bounds`, it's not a real street, just where the diagram was cut.
       if (onBoundsRect(x1, z1, bounds) && onBoundsRect(x2, z2, bounds)) continue
 
       const key = edgeKey(x1, z1, x2, z2)
@@ -157,7 +157,7 @@ export function buildCity(repos: RepoData[]): Pick<CityData, 'buildings' | 'dist
 
   const now = Date.now()
 
-  // Group into language "districts" — biggest language first, so the most
+  // Group into language "districts", biggest language first, so the most
   // dominant one reads as the most central/prominent neighborhood. Sector
   // width is a direct, unpadded proportion of that language's share of the
   // account's repos: 50% C / 50% JS renders as an exact half-and-half split,
@@ -214,7 +214,7 @@ export function buildCity(repos: RepoData[]): Pick<CityData, 'buildings' | 'dist
       const ageDays = (now - new Date(repo.pushedAt).getTime()) / 86_400_000
       const stale = ageDays > STALE_DAYS || repo.archived
 
-      // Star-fame only — staleness is applied as a render-time dimming
+      // Star-fame only, staleness is applied as a render-time dimming
       // multiplier (see building-field.tsx) rather than baked in here, so a
       // stale-but-once-popular repo still reads as a big, dark, dead
       // building rather than shrinking its glow to nothing.
