@@ -76,11 +76,11 @@ export interface PlacedCity {
   extent: number
 }
 
-// A wider candidate pool than the number of lakes actually placed, so
-// lakes can be *selected* by terrain height (the lowest candidates win)
+// A wider candidate pool than the number of water bodies actually placed,
+// so they can be *selected* by terrain height (the lowest candidates win)
 // rather than just spread evenly regardless of what's underneath them.
-const LAKE_CANDIDATE_COUNT = 48
-const LAKE_COUNT = 18
+const WATER_CANDIDATE_COUNT = 64
+const WATER_COUNT = 20
 const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
 
 // A Fibonacci lattice on the sphere, deterministic and evenly spread, no
@@ -94,72 +94,78 @@ function fibonacciSpherePoint(i: number, n: number): Vec3 {
   return [Math.cos(theta) * r, y, Math.sin(theta) * r]
 }
 
-// Beyond a lake's own edge, so two nearby lakes never sit flush against
+// Beyond a body's own edge, so two nearby ones never sit flush against
 // each other, let alone overlap.
-const LAKE_MIN_GAP_FRACTION = 0.015
+const WATER_MIN_GAP_FRACTION = 0.02
 
-// Lakes pool in valleys: sample a wide, evenly-spread candidate pool, read
-// the terrain height (lib/terrain.ts) at each, and keep only the lowest
-// ones. Size scales with how deep the valley is *relative to the other
-// selected lakes* (self-normalized against the selected set's own
-// min/max, rather than assuming a fixed noise output range) — the deepest
-// basin among them gets the biggest lake, the shallowest gets the
-// smallest.
+// Water pools in valleys: sample a wide, evenly-spread candidate pool,
+// read the terrain height (lib/terrain.ts) at each, and keep only the
+// lowest ones. Size scales with how deep the valley is *relative to the
+// other selected bodies* (self-normalized against the selected set's own
+// min/max), via a curve (t^WATER_SIZE_EXPONENT) rather than a straight
+// line, so the very deepest handful come out ocean-scale while most stay
+// modest lake-scale — an Earth-like "a few huge ones, plenty of smaller
+// ones" mix rather than a smooth uniform gradient.
 //
-// Max capped at 10% of the current planet radius — pushed as far as
-// 22% at one point (a direct "make lakes really bigger" request), but
-// measured that a lake that large breaks `buildCurvedFanGeometry`'s fan
-// triangulation: `curveWorldPoint`'s tangent-plane-to-sphere projection
-// distorts increasingly far from its own contact point, and past some
-// size the distortion reorders points enough that even re-sorting by
-// their final angle (see sphere-curve.ts) isn't enough to keep the fan
-// from self-intersecting — confirmed directly, forcing every lake to a
-// small fixed radius made the artifact vanish completely, forcing them
-// back to the large size reproduced it identically regardless of
-// triangulation order. 10% measured clean; treat that as the real
-// ceiling for this technique, not just a stylistic choice.
+// A first pass capped everything at 10% of planet radius after measuring
+// that `buildCurvedFanGeometry`'s old flat tangent-plane shoreline
+// self-intersected past that size (see the removed function's git
+// history) — this no longer applies: `buildSphericalCapFanGeometry`
+// (sphere-curve.ts) builds shorelines from exact spherical polar
+// coordinates instead of a flat projection, which stays exact at any
+// size, so 62% (a genuinely ocean-scale body, confirmed clean at this
+// size the same way the old 10% ceiling was confirmed broken — by direct
+// measurement, not assumption) is safe.
+const WATER_MIN_RADIUS_FRACTION = 0.03
+const WATER_MAX_RADIUS_FRACTION = 0.62
+const WATER_SIZE_EXPONENT = 2.5
+
 export const PLANET_FEATURES: PlanetFeature[] = (() => {
-  const candidates = Array.from({ length: LAKE_CANDIDATE_COUNT }, (_, i) => {
-    const position = fibonacciSpherePoint(i, LAKE_CANDIDATE_COUNT)
+  const candidates = Array.from({ length: WATER_CANDIDATE_COUNT }, (_, i) => {
+    const position = fibonacciSpherePoint(i, WATER_CANDIDATE_COUNT)
     return { position, height: terrainHeight01(position[0], position[1], position[2]) }
   })
     .sort((a, b) => a.height - b.height)
-    .slice(0, LAKE_COUNT)
+    .slice(0, WATER_COUNT)
 
   const heights = candidates.map((c) => c.height)
   const minHeight = Math.min(...heights)
   const heightSpan = Math.max(...heights) - minHeight || 1
 
-  const lakes = candidates.map(({ position, height }) => ({
-    position,
-    radiusFraction: 0.045 + 0.055 * (1 - (height - minHeight) / heightSpan),
-  }))
+  const bodies = candidates.map(({ position, height }) => {
+    const depthRank = 1 - (height - minHeight) / heightSpan // 1 = deepest, 0 = shallowest
+    const t = Math.pow(depthRank, WATER_SIZE_EXPONENT)
+    return {
+      position,
+      radiusFraction: WATER_MIN_RADIUS_FRACTION + (WATER_MAX_RADIUS_FRACTION - WATER_MIN_RADIUS_FRACTION) * t,
+    }
+  })
 
   // Several passes, not one: shrinking a pair to just clear each other can
-  // reopen a conflict with a third lake resolved in an earlier pass (a
+  // reopen a conflict with a third body resolved in an earlier pass (a
   // cluster of 3+ close valleys), so this relaxes toward a mutually
   // clear arrangement rather than assuming a single sweep converges it.
   for (let pass = 0; pass < 4; pass++) {
     let shrunkAny = false
-    for (let i = 0; i < lakes.length; i++) {
-      for (let j = i + 1; j < lakes.length; j++) {
-        const dist = Math.sqrt(chordDistSq(lakes[i].position, lakes[j].position))
-        const sumRadius = lakes[i].radiusFraction + lakes[j].radiusFraction
-        if (sumRadius <= 0 || dist >= sumRadius + LAKE_MIN_GAP_FRACTION) continue
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const dist = Math.sqrt(chordDistSq(bodies[i].position, bodies[j].position))
+        const sumRadius = bodies[i].radiusFraction + bodies[j].radiusFraction
+        if (sumRadius <= 0 || dist >= sumRadius + WATER_MIN_GAP_FRACTION) continue
         // Scale both down (proportionally, so the smaller one doesn't get
-        // swallowed) so their edges land exactly LAKE_MIN_GAP_FRACTION
-        // apart, floored so a tight 3+-way cluster can't shrink a lake to
+        // swallowed) so their edges land exactly WATER_MIN_GAP_FRACTION
+        // apart, floored so a tight 3+-way cluster can't shrink a body to
         // nothing.
-        const scale = Math.max(0.25, (dist - LAKE_MIN_GAP_FRACTION) / sumRadius)
-        lakes[i].radiusFraction *= scale
-        lakes[j].radiusFraction *= scale
+        const scale = Math.max(0.25, (dist - WATER_MIN_GAP_FRACTION) / sumRadius)
+        bodies[i].radiusFraction *= scale
+        bodies[j].radiusFraction *= scale
         shrunkAny = true
       }
     }
     if (!shrunkAny) break
   }
 
-  return lakes
+  return bodies
 })()
 
 // Marsaglia's method for a uniformly-distributed point on the unit sphere.
@@ -370,10 +376,15 @@ function pathMinWorldDist(a: Vec3, b: Vec3, point: Vec3, radius: number, samples
 // the obstacle by an amount that has nothing to do with the push
 // distance, so the result routinely landed *closer* to the obstacle than
 // intended). Slerp extrapolation stays exactly on the sphere throughout,
-// so the angle from the obstacle is exact by construction; chord and arc
-// distance are close enough at these scales (exclusion radii a few
-// percent of the planet radius) that solving for the angle instead of the
-// chord directly is an imperceptible difference.
+// so the angle from the obstacle is exact by construction.
+//
+// `desiredAngle` is derived from the target *chord* (world) distance via
+// the exact `2*asin(chord / (2*radius))` relation, not a straight
+// `chord/radius` division — that linear approximation is only accurate
+// for small angles (fine for the original small-lake exclusion radii,
+// a few percent of planet radius), and now that lakes range up to
+// ocean-scale exclusion radii, the gap between the two would under-push
+// roads around a big body, leaving them clipping its edge.
 function pushAwayFromObstacle(
   point: Vec3,
   obstaclePosition: Vec3,
@@ -390,7 +401,7 @@ function pushAwayFromObstacle(
   const angle = Math.acos(dot)
   if (angle < 1e-6) return point // point coincides with the obstacle's own center; nothing sane to push toward
 
-  const desiredAngle = targetWorldRadius / radius
+  const desiredAngle = 2 * Math.asin(Math.min(1, targetWorldRadius / (2 * radius)))
   const t = Math.max(1, desiredAngle / angle)
   return slerpUnit(obstaclePosition, point, t)
 }
