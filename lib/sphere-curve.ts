@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { terrainRadius } from '@/lib/terrain'
 
 const UP = new THREE.Vector3(0, 1, 0)
 
@@ -21,17 +22,35 @@ export interface SurfaceCurvature {
 // is needed *outside* of a per-sticker group's own transform, e.g. finding
 // where a city's road network actually touches the sphere so an inter-city
 // road can meet it there instead of just aiming at the city's center point.
+// `fixedSurfaceRadius`, when given, skips the terrain lookup and pulls the
+// point onto a perfect sphere of that exact radius instead — needed for
+// lakes, which must render as flat water sitting at one elevation, not a
+// puddle draped over every terrain wrinkle underneath it.
+// The tangent contact point sits on the *true* (terrain-adjusted) surface
+// at `normal`, not a flat `normal * planetRadius` — it's the point every
+// caller's wrapping `<group position=...>` actually sits at (see
+// planet-city.tsx / planet-features.tsx's useSurfaceTransform), so local
+// coordinates built relative to it stay consistent with that group's own
+// transform instead of drifting by however much the terrain deviates at
+// that particular spot.
+function terrainAnchor(normal: THREE.Vector3, planetRadius: number): THREE.Vector3 {
+  return normal.clone().multiplyScalar(terrainRadius(normal.x, normal.y, normal.z, planetRadius))
+}
+
 export function curveWorldPoint(
   x: number,
   z: number,
   normal: THREE.Vector3,
   planetRadius: number,
   quaternion: THREE.Quaternion,
+  fixedSurfaceRadius?: number,
 ): THREE.Vector3 {
-  const tangentPoint = normal.clone().multiplyScalar(planetRadius)
+  const tangentPoint = terrainAnchor(normal, planetRadius)
   const flatOffset = new THREE.Vector3(x, 0, z).applyQuaternion(quaternion)
   const flatWorld = tangentPoint.clone().add(flatOffset)
-  return flatWorld.normalize().multiplyScalar(planetRadius)
+  const dir = flatWorld.normalize()
+  const r = fixedSurfaceRadius ?? terrainRadius(dir.x, dir.y, dir.z, planetRadius)
+  return dir.multiplyScalar(r)
 }
 
 // Same point, but converted back into the tangent plane's own local space,
@@ -49,9 +68,10 @@ export function curveLocalPoint(
   normal: THREE.Vector3,
   planetRadius: number,
   quaternion: THREE.Quaternion,
+  fixedSurfaceRadius?: number,
 ): THREE.Vector3 {
-  const tangentPoint = normal.clone().multiplyScalar(planetRadius)
-  const curvedWorld = curveWorldPoint(x, z, normal, planetRadius, quaternion)
+  const tangentPoint = terrainAnchor(normal, planetRadius)
+  const curvedWorld = curveWorldPoint(x, z, normal, planetRadius, quaternion, fixedSurfaceRadius)
   return curvedWorld.sub(tangentPoint).applyQuaternion(quaternion.clone().invert())
 }
 
@@ -80,11 +100,13 @@ export function curvedLocalPlacement(
   planetRadius: number,
   quaternion: THREE.Quaternion,
 ): CurvedPlacement {
-  const tangentPoint = normal.clone().multiplyScalar(planetRadius)
+  const tangentPoint = terrainAnchor(normal, planetRadius)
   const flatOffset = new THREE.Vector3(x, 0, z).applyQuaternion(quaternion)
   const flatWorld = tangentPoint.clone().add(flatOffset)
   const worldUp = flatWorld.clone().normalize()
-  const curvedWorld = worldUp.clone().multiplyScalar(planetRadius)
+  const curvedWorld = worldUp
+    .clone()
+    .multiplyScalar(terrainRadius(worldUp.x, worldUp.y, worldUp.z, planetRadius))
   const inverseQuaternion = quaternion.clone().invert()
 
   const localBase = curvedWorld.clone().sub(tangentPoint).applyQuaternion(inverseQuaternion)
@@ -136,14 +158,30 @@ export function buildCurvedFanGeometry(
   planetRadius: number,
   normal: THREE.Vector3,
   quaternion: THREE.Quaternion,
+  fixedSurfaceRadius?: number,
 ): THREE.BufferGeometry {
-  const positions: number[] = [0, 0, 0]
-  for (const [x, z] of outline) {
-    const curved = curveLocalPoint(x, z, normal, planetRadius, quaternion)
-    positions.push(curved.x, curved.y, curved.z)
-  }
+  const curved = outline.map(([x, z]) =>
+    curveLocalPoint(x, z, normal, planetRadius, quaternion, fixedSurfaceRadius),
+  )
 
-  const n = outline.length
+  // Re-sort by each point's *own* angle after curving, not the angle it
+  // was generated at. curveLocalPoint's tangent-plane-to-sphere
+  // projection is only close to linear near the tangent point; for a
+  // large enough outline (a big lake), the distortion far from center can
+  // reorder points enough that the pre-curve angular order no longer
+  // matches their true position around the local up axis — a fan built
+  // from the stale order then has crossing triangles (visible as a
+  // jagged, z-fighting mess where they overlap). Re-deriving the order
+  // from the curved positions themselves keeps the fan valid regardless
+  // of how much the projection distorted the shape.
+  const ordered = curved
+    .map((p) => ({ p, angle: Math.atan2(p.z, p.x) }))
+    .sort((a, b) => a.angle - b.angle)
+
+  const positions: number[] = [0, 0, 0]
+  for (const { p } of ordered) positions.push(p.x, p.y, p.z)
+
+  const n = ordered.length
   const indices: number[] = []
   for (let i = 0; i < n; i++) indices.push(0, 1 + i, 1 + ((i + 1) % n))
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { curveWorldPoint } from '@/lib/sphere-curve'
+import { terrainHeight01, terrainRadius } from '@/lib/terrain'
 import type { PlanetRoad, Road } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -21,10 +22,28 @@ const PLANET_GROWTH = 35
 // overlap, not a stylistic gap, a bigger value reads as "placement is
 // weirdly far from everything."
 const SECURITY_MARGIN = 6
+// Terrain height (see lib/terrain.ts) is roughly normalized to [-1, 1];
+// reject a city candidate whose own terrain is above this so cities land
+// on hills, not mountain peaks. Not 1.0 (the actual max) since that would
+// only reject the single highest point.
+const MAX_CITY_TERRAIN_HEIGHT_01 = 0.55
 const MAX_PLACEMENT_ATTEMPTS = 500
 const KNN_K = 3
 const MAX_ROAD_CHORD = 260 // don't force a road to a neighbor that's still very far away
-const ROAD_SEGMENTS = 10 // straight sub-segments approximating one curved connection
+// Straight sub-segments approximating one curved connection. Was 10 back
+// when the surface was a perfect sphere and this only needed to look
+// smooth; now each segment's straight chord also needs to track the
+// actual terrain height along the way, and 10 wide sub-segments cut
+// straight through hills between their sparse sample points instead of
+// following them, visible as a road clipping into the ground. Denser
+// sampling keeps the chord-vs-true-terrain gap small enough not to show.
+const ROAD_SEGMENTS = 24
+// A small constant lift above the exact terrain radius a road segment's
+// endpoints are computed at, insurance against that same chord-vs-terrain
+// gap on the steepest stretches even at ROAD_SEGMENTS resolution — the
+// gap is a function of terrain curvature between two adjacent sample
+// points, which no fixed sample count fully eliminates.
+const ROAD_SURFACE_LIFT = 0.6
 const CITY_ROAD_CLEARANCE_MARGIN = 4 // beyond a city's own extent, so a road doesn't just graze its edge either
 const FEATURE_DETOUR_CLEARANCE_MARGIN = 6 // extra clearance beyond a feature's own radius when routing a road around it
 
@@ -32,8 +51,10 @@ export function planetRadius(cityCount: number): number {
   return PLANET_BASE_RADIUS + PLANET_GROWTH * Math.sqrt(cityCount)
 }
 
+// "Mountain" isn't a discrete feature anymore, it's just wherever the
+// continuous terrain height field (lib/terrain.ts) happens to be high —
+// every PlanetFeature left is a lake.
 export interface PlanetFeature {
-  kind: 'lake' | 'mountain'
   position: Vec3
   // Fraction of the *current* planet radius, not an absolute world-unit
   // size, the planet grows as cities join, and a fixed-size lake would
@@ -55,13 +76,17 @@ export interface PlacedCity {
   extent: number
 }
 
-const FEATURE_COUNT = 14
+// A wider candidate pool than the number of lakes actually placed, so
+// lakes can be *selected* by terrain height (the lowest candidates win)
+// rather than just spread evenly regardless of what's underneath them.
+const LAKE_CANDIDATE_COUNT = 48
+const LAKE_COUNT = 18
 const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
 
 // A Fibonacci lattice on the sphere, deterministic and evenly spread, no
-// Math.random() anywhere in it, so every visitor sees lakes and mountains
-// in exactly the same places (a fixed, shared landmark set, not decor that
-// differs per page load).
+// Math.random() anywhere in it, so every visitor sees the same candidate
+// pool in exactly the same places (a fixed, shared landmark set, not decor
+// that differs per page load).
 function fibonacciSpherePoint(i: number, n: number): Vec3 {
   const y = 1 - (i / (n - 1)) * 2
   const r = Math.sqrt(Math.max(0, 1 - y * y))
@@ -69,19 +94,73 @@ function fibonacciSpherePoint(i: number, n: number): Vec3 {
   return [Math.cos(theta) * r, y, Math.sin(theta) * r]
 }
 
-export const PLANET_FEATURES: PlanetFeature[] = Array.from({ length: FEATURE_COUNT }, (_, i) => {
-  const kind: 'lake' | 'mountain' = i % 2 === 0 ? 'lake' : 'mountain'
-  return {
-    kind,
-    position: fibonacciSpherePoint(i, FEATURE_COUNT),
-    // Fractions of the *current* planetRadius(), resolved at use time, see
-    // featureRadius() and its doc comment above. Kept in the same range as
-    // a typical city's own extent (a large city runs maybe 10-15% of the
-    // radius) so lakes read as landmarks among the cities, not as a feature
-    // that swallows a whole hemisphere.
-    radiusFraction: kind === 'lake' ? 0.035 + (i % 3) * 0.018 : 0.07 + (i % 3) * 0.02,
+// Beyond a lake's own edge, so two nearby lakes never sit flush against
+// each other, let alone overlap.
+const LAKE_MIN_GAP_FRACTION = 0.015
+
+// Lakes pool in valleys: sample a wide, evenly-spread candidate pool, read
+// the terrain height (lib/terrain.ts) at each, and keep only the lowest
+// ones. Size scales with how deep the valley is *relative to the other
+// selected lakes* (self-normalized against the selected set's own
+// min/max, rather than assuming a fixed noise output range) — the deepest
+// basin among them gets the biggest lake, the shallowest gets the
+// smallest.
+//
+// Max capped at 10% of the current planet radius — pushed as far as
+// 22% at one point (a direct "make lakes really bigger" request), but
+// measured that a lake that large breaks `buildCurvedFanGeometry`'s fan
+// triangulation: `curveWorldPoint`'s tangent-plane-to-sphere projection
+// distorts increasingly far from its own contact point, and past some
+// size the distortion reorders points enough that even re-sorting by
+// their final angle (see sphere-curve.ts) isn't enough to keep the fan
+// from self-intersecting — confirmed directly, forcing every lake to a
+// small fixed radius made the artifact vanish completely, forcing them
+// back to the large size reproduced it identically regardless of
+// triangulation order. 10% measured clean; treat that as the real
+// ceiling for this technique, not just a stylistic choice.
+export const PLANET_FEATURES: PlanetFeature[] = (() => {
+  const candidates = Array.from({ length: LAKE_CANDIDATE_COUNT }, (_, i) => {
+    const position = fibonacciSpherePoint(i, LAKE_CANDIDATE_COUNT)
+    return { position, height: terrainHeight01(position[0], position[1], position[2]) }
+  })
+    .sort((a, b) => a.height - b.height)
+    .slice(0, LAKE_COUNT)
+
+  const heights = candidates.map((c) => c.height)
+  const minHeight = Math.min(...heights)
+  const heightSpan = Math.max(...heights) - minHeight || 1
+
+  const lakes = candidates.map(({ position, height }) => ({
+    position,
+    radiusFraction: 0.045 + 0.055 * (1 - (height - minHeight) / heightSpan),
+  }))
+
+  // Several passes, not one: shrinking a pair to just clear each other can
+  // reopen a conflict with a third lake resolved in an earlier pass (a
+  // cluster of 3+ close valleys), so this relaxes toward a mutually
+  // clear arrangement rather than assuming a single sweep converges it.
+  for (let pass = 0; pass < 4; pass++) {
+    let shrunkAny = false
+    for (let i = 0; i < lakes.length; i++) {
+      for (let j = i + 1; j < lakes.length; j++) {
+        const dist = Math.sqrt(chordDistSq(lakes[i].position, lakes[j].position))
+        const sumRadius = lakes[i].radiusFraction + lakes[j].radiusFraction
+        if (sumRadius <= 0 || dist >= sumRadius + LAKE_MIN_GAP_FRACTION) continue
+        // Scale both down (proportionally, so the smaller one doesn't get
+        // swallowed) so their edges land exactly LAKE_MIN_GAP_FRACTION
+        // apart, floored so a tight 3+-way cluster can't shrink a lake to
+        // nothing.
+        const scale = Math.max(0.25, (dist - LAKE_MIN_GAP_FRACTION) / sumRadius)
+        lakes[i].radiusFraction *= scale
+        lakes[j].radiusFraction *= scale
+        shrunkAny = true
+      }
+    }
+    if (!shrunkAny) break
   }
-})
+
+  return lakes
+})()
 
 // Marsaglia's method for a uniformly-distributed point on the unit sphere.
 export function randomUnitVector(): Vec3 {
@@ -116,6 +195,17 @@ export function isValidPlacement(
   existing: PlacedCity[],
   radius: number,
 ): boolean {
+  // Terrain amplitude is a modest fraction of radius (see
+  // TERRAIN_AMPLITUDE_FRACTION in lib/terrain.ts), well inside
+  // SECURITY_MARGIN, so the city/lake chord-distance checks below stay a
+  // fine approximation without needing to account for height directly —
+  // but a city still shouldn't land *on* a mountain peak, which the old
+  // discrete-mountain-feature exclusion used to prevent. Read the
+  // continuous field directly instead.
+  if (terrainHeight01(candidate[0], candidate[1], candidate[2]) > MAX_CITY_TERRAIN_HEIGHT_01) {
+    return false
+  }
+
   const clearOfCities = existing.every((e) => {
     const minWorldDist = candidateExtent + e.extent + SECURITY_MARGIN
     const minChordSq = (minWorldDist / radius) ** 2
@@ -232,8 +322,13 @@ function cityEdgePoint(city: PlanetCityRoadInfo, towardPosition: Vec3, radius: n
     }
   }
 
+  // Normalize by the point's own actual length, not the constant radius —
+  // curveWorldPoint now returns a terrain-adjusted point that generally
+  // isn't exactly `radius` from center, dividing by radius would return a
+  // non-unit vector.
   const worldPoint = curveWorldPoint(bestX, bestZ, normal, radius, quaternion)
-  return [worldPoint.x / radius, worldPoint.y / radius, worldPoint.z / radius]
+  const unit = worldPoint.normalize()
+  return [unit.x, unit.y, unit.z]
 }
 
 // How far along the a-b arc (0 = a, 1 = b), sampled at ROAD_SEGMENTS
@@ -391,11 +486,12 @@ function buildFeatureDetour(
 }
 
 // Splits a straight city-edge-to-city-edge connection into waypoints that
-// route around any lake/mountain whose exclusion zone the direct path
-// would otherwise cut through, ordered along the path. A lake or mountain
-// isn't a place a road could instead be routed *through* via a third city
-// the way an intervening city is handled (see buildPlanetRoads), it just
-// needs to be gone around.
+// route around any lake whose exclusion zone the direct path would
+// otherwise cut through, ordered along the path. A lake isn't a place a
+// road could instead be routed *through* via a third city the way an
+// intervening city is handled (see buildPlanetRoads), it just needs to be
+// gone around — unlike a mountain, which isn't a discrete obstacle at
+// all anymore (see lib/terrain.ts), a road just rides over one instead.
 function buildRoadWaypoints(a: Vec3, b: Vec3, radius: number): Vec3[] {
   const intersecting = PLANET_FEATURES.map((f) => ({
     position: f.position,
@@ -448,9 +544,8 @@ function buildRoadWaypoints(a: Vec3, b: Vec3, radius: number): Vec3[] {
 // footprint, that third city is presumably already connected to both ends
 // via its own KNN edges, so the direct link becomes redundant as well as
 // visually wrong (a road cutting across someone else's rooftops). A lake
-// or mountain in the way is handled differently, curveWorldPoint's sibling
-// buildRoadWaypoints bends the path around it instead, since there's no
-// third city to route through.
+// in the way is handled differently, buildRoadWaypoints bends the path
+// around it instead, since there's no third city to route through.
 export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): PlanetRoad[] {
   if (cities.length < 2) return []
 
@@ -496,13 +591,21 @@ export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): 
         for (let s = 0; s < ROAD_SEGMENTS; s++) {
           const p0 = slerpUnit(legA, legB, s / ROAD_SEGMENTS)
           const p1 = slerpUnit(legA, legB, (s + 1) / ROAD_SEGMENTS)
+          // Each sampled point scaled by its *own* terrain radius, not the
+          // flat planet radius, so the road visibly rises and falls with
+          // the ground beneath it instead of floating at a constant
+          // height cutting through hills. Plus a small lift (see
+          // ROAD_SURFACE_LIFT) so it stays clear of the ground even where
+          // terrain curves between this sample and the next.
+          const r0 = terrainRadius(p0[0], p0[1], p0[2], radius) + ROAD_SURFACE_LIFT
+          const r1 = terrainRadius(p1[0], p1[1], p1[2], radius) + ROAD_SURFACE_LIFT
           roads.push({
-            x1: p0[0] * radius,
-            y1: p0[1] * radius,
-            z1: p0[2] * radius,
-            x2: p1[0] * radius,
-            y2: p1[1] * radius,
-            z2: p1[2] * radius,
+            x1: p0[0] * r0,
+            y1: p0[1] * r0,
+            z1: p0[2] * r0,
+            x2: p1[0] * r1,
+            y2: p1[1] * r1,
+            z2: p1[2] * r1,
           })
         }
       }

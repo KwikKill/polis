@@ -6,6 +6,7 @@ import * as THREE from 'three'
 import BuildingField from '@/components/building-field'
 import Ground from '@/components/ground'
 import { cityExtent } from '@/lib/city-builder'
+import { terrainRadius } from '@/lib/terrain'
 import type { Building, PlanetCity as PlanetCityData } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -36,7 +37,16 @@ export default function PlanetCity({
     () => new THREE.Vector3(city.planetX, city.planetY, city.planetZ).normalize(),
     [city.planetX, city.planetY, city.planetZ],
   )
-  const position = useMemo(() => normal.clone().multiplyScalar(radius), [normal, radius])
+  // The city's own anchor point sits on the *true* terrain surface, not a
+  // flat `radius` — matches the terrain-adjusted tangent point sphere-
+  // curve.ts's helpers use internally, so everything inside this group
+  // (buildings, ground, roads) lines up with where it actually sits rather
+  // than floating above/sinking below by however much the terrain
+  // deviates here.
+  const position = useMemo(
+    () => normal.clone().multiplyScalar(terrainRadius(normal.x, normal.y, normal.z, radius)),
+    [normal, radius],
+  )
   const quaternion = useMemo(() => new THREE.Quaternion().setFromUnitVectors(UP, normal), [normal])
 
   const groundRadius = useMemo(() => cityExtent(city.buildings), [city.buildings])

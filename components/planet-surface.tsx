@@ -3,6 +3,7 @@
 import { useFrame, type ThreeEvent } from '@react-three/fiber'
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { TERRAIN_AMPLITUDE_FRACTION, terrainRadius } from '@/lib/terrain'
 
 const SURFACE_VERTEX = `
   varying vec3 vPos;
@@ -158,6 +159,34 @@ const HALO_FRAGMENT = `
   }
 `
 
+// A UV sphere with every vertex pulled out (or in) to the true terrain
+// radius in its own direction (lib/terrain.ts) instead of sitting on a
+// perfect sphere — built once per radius change, not per frame, the
+// terrain is static. The fragment shader needs no changes for this: it
+// already derives the grid/pulse/glints entirely from normalize(vPos),
+// and radial displacement doesn't change a vertex's direction, only its
+// distance from center, so the grid automatically drapes over the bumps.
+function buildTerrainSurfaceGeometry(radius: number): THREE.BufferGeometry {
+  // Every city's own ground disc and building bases sit at exactly the
+  // true terrain radius (see sphere-curve.ts), the same radius this mesh
+  // would otherwise use — coincident surfaces z-fight, which used to be
+  // invisible against one flat color but now shows as flicker through the
+  // grid. Inset very slightly so this mesh is always just under every
+  // city's own footprint.
+  const epsilon = Math.max(radius * 0.002, 0.15)
+  const geometry = new THREE.SphereGeometry(radius, 96, 64)
+  const position = geometry.attributes.position
+  const dir = new THREE.Vector3()
+  for (let i = 0; i < position.count; i++) {
+    dir.set(position.getX(i), position.getY(i), position.getZ(i)).normalize()
+    const r = terrainRadius(dir.x, dir.y, dir.z, radius) - epsilon
+    position.setXYZ(i, dir.x * r, dir.y * r, dir.z * r)
+  }
+  position.needsUpdate = true
+  geometry.computeVertexNormals()
+  return geometry
+}
+
 // The planet ball, replacing the flat single-color sphere this used to be.
 // The halo mesh is excluded from raycasting so it never steals the
 // placement click meant for the surface mesh underneath it.
@@ -177,6 +206,8 @@ export default function PlanetSurface({
     haloMaterialRef.current.uniforms.uCameraDistRatio.value = camera.position.length() / radius
   })
 
+  const surfaceGeometry = useMemo(() => buildTerrainSurfaceGeometry(radius), [radius])
+
   const surfaceUniforms = useMemo(
     () => ({ uTime: { value: 0 }, baseColor: { value: new THREE.Color('#0d0818') } }),
     [],
@@ -192,14 +223,7 @@ export default function PlanetSurface({
 
   return (
     <>
-      {/* Every city's own ground disc and building bases sit at exactly
-          `radius` (see sphere-curve.ts's curveWorldPoint), the same radius
-          this mesh would otherwise use — coincident surfaces z-fight,
-          which used to be invisible against one flat color but now shows
-          as flicker through the grid. Inset very slightly so this mesh is
-          always just under every city's own footprint. */}
-      <mesh ref={surfaceMeshRef} onClick={onClick}>
-        <sphereGeometry args={[radius - Math.max(radius * 0.002, 0.15), 64, 48]} />
+      <mesh ref={surfaceMeshRef} onClick={onClick} geometry={surfaceGeometry}>
         <shaderMaterial
           vertexShader={SURFACE_VERTEX}
           fragmentShader={SURFACE_FRAGMENT}
@@ -207,7 +231,11 @@ export default function PlanetSurface({
           toneMapped={false}
         />
       </mesh>
-      <mesh raycast={() => null} scale={1.012}>
+      {/* A perfect sphere, deliberately not terrain-displaced — an
+          atmosphere shell shouldn't hug every wrinkle — but sized to clear
+          the tallest possible terrain peak (TERRAIN_AMPLITUDE_FRACTION)
+          plus a small margin, not the old flat 1.012. */}
+      <mesh raycast={() => null} scale={1 + TERRAIN_AMPLITUDE_FRACTION + 0.02}>
         <sphereGeometry args={[radius, 48, 32]} />
         <shaderMaterial
           ref={haloMaterialRef}
