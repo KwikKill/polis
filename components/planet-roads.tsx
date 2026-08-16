@@ -8,23 +8,39 @@ const ROAD_WIDTH = 1.2
 const ROAD_HEIGHT = 0.4
 const ROAD_COLOR = '#9d1fb8'
 
+// Same proportions as ground.tsx's in-city SidewalkField relative to its
+// own RoadField (width ~0.6x the road, height ~0.7x), scaled up to this
+// component's own larger road dimensions rather than reusing the flat
+// constants directly.
+const SIDEWALK_WIDTH = 0.7
+const SIDEWALK_HEIGHT = 0.28
+const SIDEWALK_COLOR = '#4a4258'
+const SIDEWALK_OFFSET = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2 + 0.06
+
 // Same instanced-box-per-segment idiom as the flat city's RoadField, but
 // oriented in full 3D (outward normal at the segment as "up," rather than
 // RoadField's flat-ground Y-only atan2 rotation) since planet roads aren't
 // coplanar, each short segment approximates one curved great-circle-ish
-// connection between two nearby cities (see buildPlanetRoads).
+// connection between two nearby cities (see buildPlanetRoads). A grey
+// sidewalk strip on each side matches the in-city road's own look, an
+// inter-city road with no shoulder read as a different, plainer kind of
+// road instead of a continuation of the same street network.
 export default function PlanetRoads({ roads }: { roads: PlanetRoad[] }) {
-  const mesh = useRef<THREE.InstancedMesh>(null!)
+  const roadMesh = useRef<THREE.InstancedMesh>(null!)
+  const sidewalkMesh = useRef<THREE.InstancedMesh>(null!)
 
   useLayoutEffect(() => {
-    if (!mesh.current || roads.length === 0) return
+    if (!roadMesh.current || roads.length === 0) return
 
     const dummy = new THREE.Object3D()
     const basis = new THREE.Matrix4()
+    const quaternion = new THREE.Quaternion()
     const start = new THREE.Vector3()
     const end = new THREE.Vector3()
     const mid = new THREE.Vector3()
     const up = new THREE.Vector3()
+    const right = new THREE.Vector3()
+    let sidewalkIdx = 0
 
     roads.forEach((r, i) => {
       start.set(r.x1, r.y1, r.z1)
@@ -34,22 +50,42 @@ export default function PlanetRoads({ roads }: { roads: PlanetRoad[] }) {
 
       const length = start.distanceTo(end)
       basis.lookAt(start, end, up)
+      quaternion.setFromRotationMatrix(basis)
+      right.setFromMatrixColumn(basis, 0)
 
       dummy.position.copy(mid)
-      dummy.quaternion.setFromRotationMatrix(basis)
+      dummy.quaternion.copy(quaternion)
       dummy.scale.set(ROAD_WIDTH, ROAD_HEIGHT, Math.max(length, 0.01))
       dummy.updateMatrix()
-      mesh.current.setMatrixAt(i, dummy.matrix)
+      roadMesh.current.setMatrixAt(i, dummy.matrix)
+
+      if (sidewalkMesh.current) {
+        for (const side of [1, -1]) {
+          dummy.position.copy(mid).addScaledVector(right, SIDEWALK_OFFSET * side)
+          dummy.quaternion.copy(quaternion)
+          dummy.scale.set(SIDEWALK_WIDTH, SIDEWALK_HEIGHT, Math.max(length, 0.01))
+          dummy.updateMatrix()
+          sidewalkMesh.current.setMatrixAt(sidewalkIdx, dummy.matrix)
+          sidewalkIdx++
+        }
+      }
     })
-    mesh.current.instanceMatrix.needsUpdate = true
+    roadMesh.current.instanceMatrix.needsUpdate = true
+    if (sidewalkMesh.current) sidewalkMesh.current.instanceMatrix.needsUpdate = true
   }, [roads])
 
   if (roads.length === 0) return null
 
   return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, roads.length]}>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshBasicMaterial color={ROAD_COLOR} toneMapped={false} />
-    </instancedMesh>
+    <>
+      <instancedMesh ref={roadMesh} args={[undefined, undefined, roads.length]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color={ROAD_COLOR} toneMapped={false} />
+      </instancedMesh>
+      <instancedMesh ref={sidewalkMesh} args={[undefined, undefined, roads.length * 2]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial color={SIDEWALK_COLOR} toneMapped={false} />
+      </instancedMesh>
+    </>
   )
 }
