@@ -28,11 +28,11 @@ export default async function HomePage() {
               Polis
             </p>
             <h1 className="polis-glow-text mt-2 font-display text-3xl uppercase tracking-wide sm:text-4xl">
-              A city built from code
+              Build your city from code
             </h1>
             <p className="mt-4 text-sm text-foreground/70 sm:text-base">
-              Every repository is a building. Every city below is someone&rsquo;s GitHub. Connect
-              yours to build one and add it to the planet.
+              Connect your github profile and visualize every repository as a building. The number of commits is the height, the language is the color, and the stars is the lightning of the building. 
+              Join the planet and see how your city connects with others in a generative night-city skyline.
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
               <ConnectButton />

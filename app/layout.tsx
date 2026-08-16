@@ -11,7 +11,7 @@ const orbitron = Orbitron({
 })
 
 export const metadata: Metadata = {
-  title: 'Polis - A cyberpunk city built from your GitHub',
+  title: 'Polis - build your city from GitHub profile',
   description:
     'A generative night-city skyline where every building is a GitHub repository: height from commits, color from language, light from stars.',
 }
