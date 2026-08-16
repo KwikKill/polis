@@ -8,7 +8,6 @@ import { useMemo, useState, useTransition } from 'react'
 import Footer from '@/components/footer'
 import PlanetCity from '@/components/planet-city'
 import PlanetCityPreview from '@/components/planet-city-preview'
-import PlanetFeatures from '@/components/planet-features'
 import PlanetRoads from '@/components/planet-roads'
 import PlanetSky from '@/components/planet-sky'
 import PlanetSurface from '@/components/planet-surface'
@@ -159,9 +158,11 @@ export default function PlanetScene({
 
         <PlanetSky />
 
+        {/* Water bodies (lakes/oceans) are painted directly into
+            PlanetSurface's own fragment shader now, not a separate
+            component — see planet-surface.tsx for why. */}
         <PlanetSurface radius={radius} onClick={handlePlanetClick} />
 
-        <PlanetFeatures radius={radius} />
         <PlanetRoads roads={roads} />
 
         {cities.map((city) => (

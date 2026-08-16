@@ -5,8 +5,8 @@ const UP = new THREE.Vector3(0, 1, 0)
 
 // The three pieces every curved-surface consumer needs: which way is
 // "outward" at the sticker's contact point, the sticker group's own
-// orientation, and the sphere's current radius. Shared across Ground,
-// BuildingField and PlanetFeatures rather than each declaring its own copy.
+// orientation, and the sphere's current radius. Shared across Ground and
+// BuildingField rather than each declaring its own copy.
 export interface SurfaceCurvature {
   normal: THREE.Vector3
   quaternion: THREE.Quaternion
@@ -25,17 +25,18 @@ export interface SurfaceCurvature {
 // The tangent contact point sits on the *true* (terrain-adjusted) surface
 // at `normal`, not a flat `normal * planetRadius` — it's the point every
 // caller's wrapping `<group position=...>` actually sits at (see
-// planet-city.tsx / planet-features.tsx's useSurfaceTransform), so local
-// coordinates built relative to it stay consistent with that group's own
-// transform instead of drifting by however much the terrain deviates at
-// that particular spot.
+// planet-city.tsx), so local coordinates built relative to it stay
+// consistent with that group's own transform instead of drifting by
+// however much the terrain deviates at that particular spot.
 //
 // This is a flat tangent-plane ("gnomonic") projection, which is only
 // close to linear near its own contact point — fine for buildings, roads,
 // and other props that stay small relative to the planet, but it distorts
-// severely far from center. Large sphere-hugging shapes (lakes/oceans,
-// see buildSphericalCapFanGeometry below) need a projection that stays
-// exact regardless of size, not this one.
+// severely far from center. Water bodies used to be built this way too
+// (a flat outline projected onto the sphere) and it broke past a modest
+// size; they're painted directly into planet-surface.tsx's fragment
+// shader now instead, sidestepping this projection's size limit entirely
+// rather than working around it.
 function terrainAnchor(normal: THREE.Vector3, planetRadius: number): THREE.Vector3 {
   return normal.clone().multiplyScalar(terrainRadius(normal.x, normal.y, normal.z, planetRadius))
 }
@@ -151,57 +152,3 @@ export function buildCurvedDiscGeometry(
   return geometry
 }
 
-// A point at true angular distance `angularRadius` (radians) from
-// `center` (a unit vector), in the direction `azimuth` — exact spherical
-// polar coordinates, via Rodrigues' rotation formula, rather than a flat
-// tangent-plane projection. This is what a lake/ocean's shoreline needs:
-// curveWorldPoint's gnomonic projection is only accurate close to its own
-// contact point, and a large enough shape (tried up to ~22% of planet
-// radius) gets distorted enough to reorder points and self-intersect —
-// confirmed directly (forcing a small fixed size made the artifact
-// disappear, restoring the real size reproduced it identically,
-// regardless of triangulation order). Rotating the center point by an
-// exact angle stays exact for any size up to just under a hemisphere, no
-// distortion to accumulate in the first place.
-function sphericalCapPoint(center: THREE.Vector3, angularRadius: number, azimuth: number): THREE.Vector3 {
-  const arbitraryUp = Math.abs(center.y) < 0.99 ? UP : new THREE.Vector3(1, 0, 0)
-  const tangentA = arbitraryUp.clone().cross(center).normalize()
-  const tangentB = center.clone().cross(tangentA)
-  const direction = tangentA
-    .clone()
-    .multiplyScalar(Math.cos(azimuth))
-    .addScaledVector(tangentB, Math.sin(azimuth))
-  const axis = center.clone().cross(direction).normalize()
-  return center.clone().applyAxisAngle(axis, angularRadius)
-}
-
-// A flat cap (fixed distance from planet center) built from true angular
-// polar coordinates around `center` — the lake/ocean shoreline geometry,
-// replacing the old flat-outline `buildCurvedFanGeometry`. `angularRadiusAt`
-// gives the (possibly wobbling) angular radius at each azimuth; points come
-// out already in true azimuth order by construction, no post-hoc re-sort
-// needed the way the old tangent-plane version required. Builds directly
-// in absolute world space (not a sticker group's local space) since there's
-// no flat tangent plane involved at all here.
-export function buildSphericalCapFanGeometry(
-  center: THREE.Vector3,
-  angularRadiusAt: (azimuth: number) => number,
-  segments: number,
-  surfaceRadius: number,
-): THREE.BufferGeometry {
-  const positions: number[] = [center.x * surfaceRadius, center.y * surfaceRadius, center.z * surfaceRadius]
-  for (let i = 0; i < segments; i++) {
-    const azimuth = (i / segments) * Math.PI * 2
-    const p = sphericalCapPoint(center, angularRadiusAt(azimuth), azimuth)
-    positions.push(p.x * surfaceRadius, p.y * surfaceRadius, p.z * surfaceRadius)
-  }
-
-  const indices: number[] = []
-  for (let i = 0; i < segments; i++) indices.push(0, 1 + i, 1 + ((i + 1) % segments))
-
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geometry.setIndex(indices)
-  geometry.computeVertexNormals()
-  return geometry
-}

@@ -80,7 +80,10 @@ export interface PlacedCity {
 // so they can be *selected* by terrain height (the lowest candidates win)
 // rather than just spread evenly regardless of what's underneath them.
 const WATER_CANDIDATE_COUNT = 64
-const WATER_COUNT = 20
+// Exported so planet-surface.tsx's shader-side water rendering can size
+// its fixed-length uniform arrays to match exactly, rather than
+// duplicating this number in a second file where it could drift.
+export const WATER_COUNT = 20
 const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
 
 // A Fibonacci lattice on the sphere, deterministic and evenly spread, no
@@ -107,15 +110,16 @@ const WATER_MIN_GAP_FRACTION = 0.02
 // modest lake-scale — an Earth-like "a few huge ones, plenty of smaller
 // ones" mix rather than a smooth uniform gradient.
 //
-// A first pass capped everything at 10% of planet radius after measuring
-// that `buildCurvedFanGeometry`'s old flat tangent-plane shoreline
-// self-intersected past that size (see the removed function's git
-// history) — this no longer applies: `buildSphericalCapFanGeometry`
-// (sphere-curve.ts) builds shorelines from exact spherical polar
-// coordinates instead of a flat projection, which stays exact at any
-// size, so 62% (a genuinely ocean-scale body, confirmed clean at this
-// size the same way the old 10% ceiling was confirmed broken — by direct
-// measurement, not assumption) is safe.
+// Sizing went through two earlier, now-removed rendering techniques
+// before landing here: a flat tangent-plane shoreline mesh that
+// self-intersected past ~10% of planet radius, then an exact-spherical
+// mesh that fixed the self-intersection but could never fully avoid a
+// visible seam against the ground at any size (see planet-surface.tsx —
+// water is painted directly into the ground's own shader now, no second
+// mesh to misalign at all). Sizing itself only cares about the exclusion
+// zone math in this file, which was already exact regardless of body
+// size, so 62% (confirmed rendering cleanly once the rendering technique
+// itself stopped being the constraint) is safe.
 const WATER_MIN_RADIUS_FRACTION = 0.03
 const WATER_MAX_RADIUS_FRACTION = 0.62
 const WATER_SIZE_EXPONENT = 2.5
@@ -145,7 +149,17 @@ export const PLANET_FEATURES: PlanetFeature[] = (() => {
   // reopen a conflict with a third body resolved in an earlier pass (a
   // cluster of 3+ close valleys), so this relaxes toward a mutually
   // clear arrangement rather than assuming a single sweep converges it.
-  for (let pass = 0; pass < 4; pass++) {
+  // No floor on the per-pass scale (an earlier version clamped it to a
+  // minimum of 0.25 so a tight cluster couldn't shrink a body to nothing)
+  // — with oceans now up to 60%+ of planet radius next to 3% lakes, the
+  // scale actually needed to separate a huge/tiny pair is routinely
+  // *below* that floor, so the floor was silently under-shrinking them:
+  // the bodies still overlapped afterward ("lakes inside lakes"), just
+  // less than before. Correctness matters more here than guaranteeing
+  // every body stays a visible size — a lake immediately next to a much
+  // bigger ocean's center genuinely has no room and should shrink toward
+  // nothing rather than stay overlapping it.
+  for (let pass = 0; pass < 6; pass++) {
     let shrunkAny = false
     for (let i = 0; i < bodies.length; i++) {
       for (let j = i + 1; j < bodies.length; j++) {
@@ -154,9 +168,8 @@ export const PLANET_FEATURES: PlanetFeature[] = (() => {
         if (sumRadius <= 0 || dist >= sumRadius + WATER_MIN_GAP_FRACTION) continue
         // Scale both down (proportionally, so the smaller one doesn't get
         // swallowed) so their edges land exactly WATER_MIN_GAP_FRACTION
-        // apart, floored so a tight 3+-way cluster can't shrink a body to
-        // nothing.
-        const scale = Math.max(0.25, (dist - WATER_MIN_GAP_FRACTION) / sumRadius)
+        // apart.
+        const scale = Math.max(0, (dist - WATER_MIN_GAP_FRACTION) / sumRadius)
         bodies[i].radiusFraction *= scale
         bodies[j].radiusFraction *= scale
         shrunkAny = true

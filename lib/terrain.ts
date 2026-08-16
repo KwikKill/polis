@@ -71,3 +71,10 @@ export function terrainRadius(
 ): number {
   return baseRadius + terrainHeight01(x, y, z) * baseRadius * amplitudeFraction
 }
+
+// The planet surface mesh (planet-surface.tsx) sits very slightly *under*
+// terrainRadius() so city ground discs (which sit at exactly
+// terrainRadius(), see sphere-curve.ts) don't z-fight it.
+export function groundSurfaceEpsilon(baseRadius: number): number {
+  return Math.max(baseRadius * 0.002, 0.15)
+}
