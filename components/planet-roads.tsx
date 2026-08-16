@@ -4,18 +4,22 @@ import { useLayoutEffect, useRef } from 'react'
 import * as THREE from 'three'
 import type { PlanetRoad } from '@/lib/types'
 
-const ROAD_WIDTH = 1.2
-const ROAD_HEIGHT = 0.4
+// Exactly ground.tsx's in-city ROAD_WIDTH/ROAD_HEIGHT (was 1.2/0.4 before,
+// visibly wider than an in-city road for no real reason, an inter-city
+// road is still a road). Sharing this width means the per-segment
+// straight-box joints along a curved connection are also narrower, and so
+// less forgiving of any angular kink between adjacent segments than the
+// old wide version was, see buildPlanetRoads/buildFeatureDetour's own
+// DETOUR_ARC_POINTS for the corresponding fix on the geometry side.
+const ROAD_WIDTH = 0.55
+const ROAD_HEIGHT = 0.05
 const ROAD_COLOR = '#9d1fb8'
 
-// Same proportions as ground.tsx's in-city SidewalkField relative to its
-// own RoadField (width ~0.6x the road, height ~0.7x), scaled up to this
-// component's own larger road dimensions rather than reusing the flat
-// constants directly.
-const SIDEWALK_WIDTH = 0.7
-const SIDEWALK_HEIGHT = 0.28
+// Exactly ground.tsx's in-city SidewalkField dimensions too.
+const SIDEWALK_WIDTH = 0.32
+const SIDEWALK_HEIGHT = 0.035
 const SIDEWALK_COLOR = '#4a4258'
-const SIDEWALK_OFFSET = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2 + 0.06
+const SIDEWALK_OFFSET = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2 + 0.03
 
 // Same instanced-box-per-segment idiom as the flat city's RoadField, but
 // oriented in full 3D (outward normal at the segment as "up," rather than

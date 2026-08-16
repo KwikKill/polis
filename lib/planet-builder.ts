@@ -340,7 +340,14 @@ function findBoundaryCrossings(
   return { entryT: entryT < 0 ? 0 : entryT, exitT: exitT < 0 ? 1 : exitT }
 }
 
-const DETOUR_ARC_POINTS = 5 // interior waypoints spanning the exclusion zone
+// Interior waypoints spanning the exclusion zone. Each one is its own
+// straight-box road segment with its own orientation (see planet-roads
+// .tsx), so more of them means a smaller angular kink at every joint
+// between adjacent segments, i.e. a smoother-looking curve. This mattered
+// more once the rendered road width dropped to match the in-city road's
+// own (narrower) width: the same kink that was easy to miss on a wide
+// road reads as a visible little elbow on a narrow one.
+const DETOUR_ARC_POINTS = 14
 // Beyond the exact exclusion radius: a straight chord between two points
 // on the same circle sags slightly *inside* that circle, so pushing points
 // to exactly clearWorldRadius still let the connecting legs dip a little
