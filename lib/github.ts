@@ -33,14 +33,49 @@ async function githubFetch<T>(path: string, token?: string): Promise<T | null> {
   return (await res.json()) as T
 }
 
+// Thrown only for the *first* page of a user's repo list failing, that's
+// the one request that gates everything else, and the one whose failure
+// mode is worth telling apart: a nonexistent username should read
+// differently from a rate limit. Later pages failing (pagination cut
+// short) or per-repo language/commit-count calls failing are left as the
+// existing silent-null/empty-default behavior, a real repo list with a few
+// gaps in its detail is still useful, this is specifically about not
+// silently producing an entirely empty city and calling it done.
+export class GithubFetchError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message)
+    this.name = 'GithubFetchError'
+  }
+}
+
 async function fetchAllRepos(username: string, token?: string): Promise<GithubRepo[]> {
   const repos: GithubRepo[] = []
   for (let page = 1; page <= 3; page++) {
-    const batch = await githubFetch<GithubRepo[]>(
-      `/users/${username}/repos?per_page=100&page=${page}&type=owner&sort=pushed`,
-      token,
+    const res = await fetch(
+      `${GITHUB_API}/users/${username}/repos?per_page=100&page=${page}&type=owner&sort=pushed`,
+      { headers: authHeaders(token) },
     )
-    if (!batch || batch.length === 0) break
+
+    if (!res.ok) {
+      if (page > 1) break // already have some repos from earlier pages, good enough
+
+      if (res.status === 404) {
+        throw new GithubFetchError(`GitHub user "${username}" not found`, 404)
+      }
+      if (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0') {
+        throw new GithubFetchError(
+          'GitHub API rate limit exceeded for unauthenticated requests (set GITHUB_TOKEN in .env to raise it, needs no scopes for public data)',
+          403,
+        )
+      }
+      throw new GithubFetchError(`GitHub API error ${res.status} fetching repos for "${username}"`, res.status)
+    }
+
+    const batch = (await res.json()) as GithubRepo[]
+    if (batch.length === 0) break
     repos.push(...batch)
     if (batch.length < 100) break
   }

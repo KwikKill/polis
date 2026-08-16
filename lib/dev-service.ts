@@ -5,6 +5,7 @@ import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { generateAndSaveCity } from '@/lib/city-service'
 import { prisma } from '@/lib/prisma'
+import type { CityData } from '@/lib/types'
 
 // @auth/core's own cookie name for a database-strategy session, unprefixed
 // unless the deployment is HTTPS (see @auth/core/lib/utils/cookie.js's
@@ -40,12 +41,24 @@ async function establishDevSession(userId: string) {
 }
 
 // Signs in as `username` with no GitHub OAuth at all: reuses (or creates) a
-// User row for that username, generates a city for it if one doesn't exist
-// yet (generateAndSaveCity already works without a GitHub token, just at
-// the public, unauthenticated rate limit, since it's the exact same path
-// GenerateAndRedirect calls for a normal sign-in when there's no linked
-// GitHub Account token yet), then mints a session exactly like a real
-// sign-in would.
+// User row for that username, generates a city for it if it doesn't have
+// one yet *or* the existing one is empty (see below), then mints a
+// session exactly like a real sign-in would.
+//
+// generateAndSaveCity works without a GitHub token, it's the exact same
+// path GenerateAndRedirect calls for a normal sign-in when there's no
+// linked GitHub Account token yet, but that path runs at GitHub's
+// unauthenticated rate limit (60 requests/hour *per IP*, shared across
+// every dev-mode sign-in), and city generation can easily be 100+ requests
+// for one account (a paginated repo list, then a languages + commit-count
+// call per repo). Set GITHUB_TOKEN in .env (needs no scopes, just needs to
+// exist, to move the request off the unauthenticated tier and up to
+// 5000/hour) to raise it for local testing. If generation fails,
+// generateAndSaveCity now throws a GithubFetchError instead of silently
+// saving an empty city, letting Next's dev error overlay show exactly
+// why (rate limited vs. the username not existing on GitHub at all) —
+// this used to fail silently, an empty city with no error at all was the
+// actual bug report this was fixed for.
 export async function devSignIn(username: string) {
   assertDevMode()
   const trimmed = username.trim()
@@ -58,7 +71,15 @@ export async function devSignIn(username: string) {
   })
 
   const existingCity = await prisma.city.findUnique({ where: { userId: user.id } })
-  if (!existingCity) {
+  // An empty city (zero buildings) almost always means an earlier sign-in
+  // attempt hit exactly the rate-limit/error case above before this fix
+  // existed, or before GITHUB_TOKEN was set, treat it the same as no city
+  // at all so retrying (e.g. after setting GITHUB_TOKEN) actually retries
+  // instead of forever reusing the stale empty result.
+  const existingBuildingCount = existingCity
+    ? (existingCity.data as unknown as CityData).buildings.length
+    : 0
+  if (!existingCity || existingBuildingCount === 0) {
     await generateAndSaveCity(user.id, trimmed)
   }
 
