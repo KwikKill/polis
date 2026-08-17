@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { curveWorldPoint } from '@/lib/sphere-curve'
-import { terrainHeight01, terrainRadius } from '@/lib/terrain'
+import { SEA_LEVEL_HEIGHT01, terrainHeight01, terrainRadius } from '@/lib/terrain'
 import type { PlanetRoad, Road } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -15,18 +15,25 @@ export type Vec3 = [number, number, number]
 // at typical city sizes.
 const PLANET_BASE_RADIUS = 120
 const PLANET_GROWTH = 35
-// Extra clearance beyond two cities' (or a city's and a feature's) own
-// touching extents, not a flat separation distance on its own, since a
-// tiny and a huge city need very different gaps to avoid actually
-// overlapping. Kept small on purpose: this is a buffer against actual
-// overlap, not a stylistic gap, a bigger value reads as "placement is
-// weirdly far from everything."
+// Extra clearance beyond two cities' own touching extents, not a flat
+// separation distance on its own, since a tiny and a huge city need very
+// different gaps to avoid actually overlapping. Kept small on purpose:
+// this is a buffer against actual overlap, not a stylistic gap, a bigger
+// value reads as "placement is weirdly far from everything."
 const SECURITY_MARGIN = 6
 // Terrain height (see lib/terrain.ts) is roughly normalized to [-1, 1];
 // reject a city candidate whose own terrain is above this so cities land
 // on hills, not mountain peaks. Not 1.0 (the actual max) since that would
 // only reject the single highest point.
 const MAX_CITY_TERRAIN_HEIGHT_01 = 0.55
+// A little above SEA_LEVEL_HEIGHT01 itself, so a city's shoreline doesn't
+// sit exactly on the waterline (buildings with wet feet) — the placement-
+// side analogue of SECURITY_MARGIN, a buffer rather than a bare boundary.
+const COAST_CLEARANCE_HEIGHT01 = 0.04
+// How many points around a candidate's own footprint get height-checked
+// (see pointsOnCap below) — enough to catch a footprint that pokes into
+// the ocean on one side even though its center point is dry.
+const FOOTPRINT_SAMPLE_COUNT = 8
 const MAX_PLACEMENT_ATTEMPTS = 500
 const KNN_K = 3
 const MAX_ROAD_CHORD = 260 // don't force a road to a neighbor that's still very far away
@@ -45,141 +52,45 @@ const ROAD_SEGMENTS = 24
 // points, which no fixed sample count fully eliminates.
 const ROAD_SURFACE_LIFT = 0.6
 const CITY_ROAD_CLEARANCE_MARGIN = 4 // beyond a city's own extent, so a road doesn't just graze its edge either
-const FEATURE_DETOUR_CLEARANCE_MARGIN = 6 // extra clearance beyond a feature's own radius when routing a road around it
+// How densely a candidate road is sampled to check whether it dips below
+// sea level anywhere along its length (see crossesOcean below).
+const OCEAN_CROSSING_SAMPLES = 32
 
 export function planetRadius(cityCount: number): number {
   return PLANET_BASE_RADIUS + PLANET_GROWTH * Math.sqrt(cityCount)
 }
 
-// "Mountain" isn't a discrete feature anymore, it's just wherever the
-// continuous terrain height field (lib/terrain.ts) happens to be high —
-// every PlanetFeature left is a lake.
-export interface PlanetFeature {
-  position: Vec3
-  // Fraction of the *current* planet radius, not an absolute world-unit
-  // size, the planet grows as cities join, and a fixed-size lake would
-  // shrink relative to it over time. Use featureRadius() to resolve this
-  // against a specific radius.
-  radiusFraction: number
-}
-
-export function featureRadius(feature: PlanetFeature, radius: number): number {
-  return feature.radiusFraction * radius
-}
-
 // A city's own position + the actual reach of its buildings (city-builder
 // .ts's cityExtent), placement needs the real footprint, not just a
-// center point, or a big city's buildings can end up sitting in a lake
-// its center point was technically clear of.
+// center point, or a big city's buildings can end up reaching into
+// another city's own footprint its center point was technically clear of.
 export interface PlacedCity {
   position: Vec3
   extent: number
 }
 
-// A wider candidate pool than the number of water bodies actually placed,
-// so they can be *selected* by terrain height (the lowest candidates win)
-// rather than just spread evenly regardless of what's underneath them.
-const WATER_CANDIDATE_COUNT = 64
-// Exported so planet-surface.tsx's shader-side water rendering can size
-// its fixed-length uniform arrays to match exactly, rather than
-// duplicating this number in a second file where it could drift.
-export const WATER_COUNT = 20
-const GOLDEN_ANGLE_RAD = Math.PI * (3 - Math.sqrt(5))
+// Points on the circle of `angularRadius` around `center`, via Rodrigues'
+// rotation: rotate `center` toward an arbitrary tangent direction by
+// angularRadius to get one boundary point, then spin that point around
+// `center` itself to sweep the rest. Used to sample a candidate city's
+// whole footprint (not just its own center point) against the terrain
+// height field, so a city can't have its center on dry land while half its
+// buildings reach out over open water.
+function pointsOnCap(center: Vec3, angularRadius: number, count: number): Vec3[] {
+  const c = new THREE.Vector3(center[0], center[1], center[2]).normalize()
+  const arbitrary = Math.abs(c.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+  const tangent = new THREE.Vector3().crossVectors(arbitrary, c).normalize()
+  const axis = new THREE.Vector3().crossVectors(c, tangent).normalize()
+  const boundary0 = c.clone().applyAxisAngle(axis, angularRadius)
 
-// A Fibonacci lattice on the sphere, deterministic and evenly spread, no
-// Math.random() anywhere in it, so every visitor sees the same candidate
-// pool in exactly the same places (a fixed, shared landmark set, not decor
-// that differs per page load).
-function fibonacciSpherePoint(i: number, n: number): Vec3 {
-  const y = 1 - (i / (n - 1)) * 2
-  const r = Math.sqrt(Math.max(0, 1 - y * y))
-  const theta = GOLDEN_ANGLE_RAD * i
-  return [Math.cos(theta) * r, y, Math.sin(theta) * r]
-}
-
-// Beyond a body's own edge, so two nearby ones never sit flush against
-// each other, let alone overlap.
-const WATER_MIN_GAP_FRACTION = 0.02
-
-// Water pools in valleys: sample a wide, evenly-spread candidate pool,
-// read the terrain height (lib/terrain.ts) at each, and keep only the
-// lowest ones. Size scales with how deep the valley is *relative to the
-// other selected bodies* (self-normalized against the selected set's own
-// min/max), via a curve (t^WATER_SIZE_EXPONENT) rather than a straight
-// line, so the very deepest handful come out ocean-scale while most stay
-// modest lake-scale — an Earth-like "a few huge ones, plenty of smaller
-// ones" mix rather than a smooth uniform gradient.
-//
-// Sizing went through two earlier, now-removed rendering techniques
-// before landing here: a flat tangent-plane shoreline mesh that
-// self-intersected past ~10% of planet radius, then an exact-spherical
-// mesh that fixed the self-intersection but could never fully avoid a
-// visible seam against the ground at any size (see planet-surface.tsx —
-// water is painted directly into the ground's own shader now, no second
-// mesh to misalign at all). Sizing itself only cares about the exclusion
-// zone math in this file, which was already exact regardless of body
-// size, so 62% (confirmed rendering cleanly once the rendering technique
-// itself stopped being the constraint) is safe.
-const WATER_MIN_RADIUS_FRACTION = 0.03
-const WATER_MAX_RADIUS_FRACTION = 0.62
-const WATER_SIZE_EXPONENT = 2.5
-
-export const PLANET_FEATURES: PlanetFeature[] = (() => {
-  const candidates = Array.from({ length: WATER_CANDIDATE_COUNT }, (_, i) => {
-    const position = fibonacciSpherePoint(i, WATER_CANDIDATE_COUNT)
-    return { position, height: terrainHeight01(position[0], position[1], position[2]) }
-  })
-    .sort((a, b) => a.height - b.height)
-    .slice(0, WATER_COUNT)
-
-  const heights = candidates.map((c) => c.height)
-  const minHeight = Math.min(...heights)
-  const heightSpan = Math.max(...heights) - minHeight || 1
-
-  const bodies = candidates.map(({ position, height }) => {
-    const depthRank = 1 - (height - minHeight) / heightSpan // 1 = deepest, 0 = shallowest
-    const t = Math.pow(depthRank, WATER_SIZE_EXPONENT)
-    return {
-      position,
-      radiusFraction: WATER_MIN_RADIUS_FRACTION + (WATER_MAX_RADIUS_FRACTION - WATER_MIN_RADIUS_FRACTION) * t,
-    }
-  })
-
-  // Several passes, not one: shrinking a pair to just clear each other can
-  // reopen a conflict with a third body resolved in an earlier pass (a
-  // cluster of 3+ close valleys), so this relaxes toward a mutually
-  // clear arrangement rather than assuming a single sweep converges it.
-  // No floor on the per-pass scale (an earlier version clamped it to a
-  // minimum of 0.25 so a tight cluster couldn't shrink a body to nothing)
-  // — with oceans now up to 60%+ of planet radius next to 3% lakes, the
-  // scale actually needed to separate a huge/tiny pair is routinely
-  // *below* that floor, so the floor was silently under-shrinking them:
-  // the bodies still overlapped afterward ("lakes inside lakes"), just
-  // less than before. Correctness matters more here than guaranteeing
-  // every body stays a visible size — a lake immediately next to a much
-  // bigger ocean's center genuinely has no room and should shrink toward
-  // nothing rather than stay overlapping it.
-  for (let pass = 0; pass < 6; pass++) {
-    let shrunkAny = false
-    for (let i = 0; i < bodies.length; i++) {
-      for (let j = i + 1; j < bodies.length; j++) {
-        const dist = Math.sqrt(chordDistSq(bodies[i].position, bodies[j].position))
-        const sumRadius = bodies[i].radiusFraction + bodies[j].radiusFraction
-        if (sumRadius <= 0 || dist >= sumRadius + WATER_MIN_GAP_FRACTION) continue
-        // Scale both down (proportionally, so the smaller one doesn't get
-        // swallowed) so their edges land exactly WATER_MIN_GAP_FRACTION
-        // apart.
-        const scale = Math.max(0, (dist - WATER_MIN_GAP_FRACTION) / sumRadius)
-        bodies[i].radiusFraction *= scale
-        bodies[j].radiusFraction *= scale
-        shrunkAny = true
-      }
-    }
-    if (!shrunkAny) break
+  const points: Vec3[] = []
+  for (let k = 0; k < count; k++) {
+    const azimuth = (k / count) * Math.PI * 2
+    const p = boundary0.clone().applyAxisAngle(c, azimuth)
+    points.push([p.x, p.y, p.z])
   }
-
-  return bodies
-})()
+  return points
+}
 
 // Marsaglia's method for a uniformly-distributed point on the unit sphere.
 export function randomUnitVector(): Vec3 {
@@ -203,44 +114,37 @@ export function chordDistSq(a: Vec3, b: Vec3): number {
   return 2 - 2 * dot
 }
 
-// A candidate is valid only if its own footprint (extent) plus a security
-// margin clears every other city's *actual* footprint, and every natural
-// feature's footprint, not just a fixed distance between center points,
-// which let a large city's buildings reach into a lake its center was
-// technically clear of.
+// A candidate is valid only if: its own terrain isn't a mountain peak or
+// underwater (checked at its center *and* around its whole footprint, a
+// large city's edge can dip below sea level even when its center point is
+// dry), and its footprint (extent) plus a security margin clears every
+// other city's *actual* footprint, not just a fixed distance between
+// center points.
 export function isValidPlacement(
   candidate: Vec3,
   candidateExtent: number,
   existing: PlacedCity[],
   radius: number,
 ): boolean {
-  // Terrain amplitude is a modest fraction of radius (see
-  // TERRAIN_AMPLITUDE_FRACTION in lib/terrain.ts), well inside
-  // SECURITY_MARGIN, so the city/lake chord-distance checks below stay a
-  // fine approximation without needing to account for height directly —
-  // but a city still shouldn't land *on* a mountain peak, which the old
-  // discrete-mountain-feature exclusion used to prevent. Read the
-  // continuous field directly instead.
-  if (terrainHeight01(candidate[0], candidate[1], candidate[2]) > MAX_CITY_TERRAIN_HEIGHT_01) {
-    return false
-  }
+  const centerHeight = terrainHeight01(candidate[0], candidate[1], candidate[2])
+  if (centerHeight > MAX_CITY_TERRAIN_HEIGHT_01) return false
+  if (centerHeight < SEA_LEVEL_HEIGHT01 + COAST_CLEARANCE_HEIGHT01) return false
 
-  const clearOfCities = existing.every((e) => {
+  const angularExtent = 2 * Math.asin(Math.min(1, candidateExtent / (2 * radius)))
+  const footprintOnLand = pointsOnCap(candidate, angularExtent, FOOTPRINT_SAMPLE_COUNT).every(
+    (p) => terrainHeight01(p[0], p[1], p[2]) >= SEA_LEVEL_HEIGHT01 + COAST_CLEARANCE_HEIGHT01,
+  )
+  if (!footprintOnLand) return false
+
+  return existing.every((e) => {
     const minWorldDist = candidateExtent + e.extent + SECURITY_MARGIN
     const minChordSq = (minWorldDist / radius) ** 2
     return chordDistSq(candidate, e.position) >= minChordSq
   })
-  if (!clearOfCities) return false
-
-  return PLANET_FEATURES.every((f) => {
-    const minWorldDist = candidateExtent + featureRadius(f, radius) + SECURITY_MARGIN
-    const featureChordSq = (minWorldDist / radius) ** 2
-    return chordDistSq(candidate, f.position) >= featureChordSq
-  })
 }
 
 // Bounded rejection sampling for a spot clear of every existing city's
-// footprint and every natural feature. Always returns a position, on the
+// footprint and off the water entirely. Always returns a position, on the
 // rare exhaustion of MAX_PLACEMENT_ATTEMPTS (the growth constants are
 // tuned to make this vanishingly unlikely), soft-degrades to whichever
 // candidate maximized the minimum distance to every neighboring city,
@@ -350,27 +254,9 @@ function cityEdgePoint(city: PlanetCityRoadInfo, towardPosition: Vec3, radius: n
   return [unit.x, unit.y, unit.z]
 }
 
-// How far along the a-b arc (0 = a, 1 = b), sampled at ROAD_SEGMENTS
-// resolution, comes closest to `point` -- used both to test whether a path
-// enters an obstacle's zone at all and, if so, roughly where along the
-// path that happens.
-function closestApproachT(a: Vec3, b: Vec3, point: Vec3, samples = ROAD_SEGMENTS): number {
-  let bestT = 0
-  let bestDistSq = Infinity
-  for (let s = 0; s <= samples; s++) {
-    const t = s / samples
-    const d = chordDistSq(slerpUnit(a, b, t), point)
-    if (d < bestDistSq) {
-      bestDistSq = d
-      bestT = t
-    }
-  }
-  return bestT
-}
-
 // World-unit distance from the closest point sampled along the a-b arc to
-// `point`, the same sampling closestApproachT does, just returning the
-// distance itself rather than where it happened.
+// `point`, used to test whether a straight connection would cut through a
+// third city's own footprint.
 function pathMinWorldDist(a: Vec3, b: Vec3, point: Vec3, radius: number, samples = ROAD_SEGMENTS): number {
   let bestDistSq = Infinity
   for (let s = 0; s <= samples; s++) {
@@ -380,159 +266,18 @@ function pathMinWorldDist(a: Vec3, b: Vec3, point: Vec3, radius: number, samples
   return Math.sqrt(bestDistSq) * radius
 }
 
-// A single point pushed away from `obstaclePosition`, along the great
-// circle through it and `point`, extrapolated (via slerpUnit with t > 1)
-// until it's `targetWorldRadius` away. Deliberately not "push the point
-// away in flat 3D space, then re-normalize back onto the sphere" (an
-// earlier version did exactly that, and it doesn't actually work,
-// re-normalizing after a flat push moves the point back toward/away from
-// the obstacle by an amount that has nothing to do with the push
-// distance, so the result routinely landed *closer* to the obstacle than
-// intended). Slerp extrapolation stays exactly on the sphere throughout,
-// so the angle from the obstacle is exact by construction.
-//
-// `desiredAngle` is derived from the target *chord* (world) distance via
-// the exact `2*asin(chord / (2*radius))` relation, not a straight
-// `chord/radius` division — that linear approximation is only accurate
-// for small angles (fine for the original small-lake exclusion radii,
-// a few percent of planet radius), and now that lakes range up to
-// ocean-scale exclusion radii, the gap between the two would under-push
-// roads around a big body, leaving them clipping its edge.
-function pushAwayFromObstacle(
-  point: Vec3,
-  obstaclePosition: Vec3,
-  targetWorldRadius: number,
-  radius: number,
-): Vec3 {
-  const dot = Math.min(
-    1,
-    Math.max(
-      -1,
-      obstaclePosition[0] * point[0] + obstaclePosition[1] * point[1] + obstaclePosition[2] * point[2],
-    ),
-  )
-  const angle = Math.acos(dot)
-  if (angle < 1e-6) return point // point coincides with the obstacle's own center; nothing sane to push toward
-
-  const desiredAngle = 2 * Math.asin(Math.min(1, targetWorldRadius / (2 * radius)))
-  const t = Math.max(1, desiredAngle / angle)
-  return slerpUnit(obstaclePosition, point, t)
-}
-
-// Where the straight a-b path crosses `clearWorldRadius` away from
-// `obstaclePosition`, entering and exiting, found by sampling and linearly
-// interpolating between the bracketing samples. Assumes (and callers
-// should already have checked) that the path actually comes closer than
-// clearWorldRadius somewhere in between.
-function findBoundaryCrossings(
-  a: Vec3,
-  b: Vec3,
-  obstaclePosition: Vec3,
-  clearWorldRadius: number,
-  radius: number,
-  samples = 40,
-): { entryT: number; exitT: number } {
-  const distAt = (t: number) => Math.sqrt(chordDistSq(slerpUnit(a, b, t), obstaclePosition)) * radius
-
-  let entryT = -1
-  let exitT = -1
-  let prevT = 0
-  let prevDist = distAt(0)
-
-  for (let s = 1; s <= samples; s++) {
-    const t = s / samples
-    const dist = distAt(t)
-
-    if (entryT < 0 && prevDist >= clearWorldRadius && dist < clearWorldRadius) {
-      const frac = (clearWorldRadius - prevDist) / (dist - prevDist)
-      entryT = prevT + frac * (t - prevT)
-    }
-    if (prevDist < clearWorldRadius && dist >= clearWorldRadius) {
-      const frac = (clearWorldRadius - prevDist) / (dist - prevDist)
-      exitT = prevT + frac * (t - prevT)
-    }
-
-    prevT = t
-    prevDist = dist
+// Whether the straight a-b connection dips below sea level anywhere along
+// its length. A continuous ocean has no single center/radius the way a
+// discrete lake used to, so there's no obstacle to route an arc around —
+// the road just doesn't get built at all, the same way a connection that
+// would cut through a third city's footprint is dropped outright rather
+// than rerouted. Real infrastructure doesn't casually bridge oceans either.
+function crossesOcean(a: Vec3, b: Vec3, samples = OCEAN_CROSSING_SAMPLES): boolean {
+  for (let s = 0; s <= samples; s++) {
+    const p = slerpUnit(a, b, s / samples)
+    if (terrainHeight01(p[0], p[1], p[2]) < SEA_LEVEL_HEIGHT01) return true
   }
-
-  return { entryT: entryT < 0 ? 0 : entryT, exitT: exitT < 0 ? 1 : exitT }
-}
-
-// Interior waypoints spanning the exclusion zone. Each one is its own
-// straight-box road segment with its own orientation (see planet-roads
-// .tsx), so more of them means a smaller angular kink at every joint
-// between adjacent segments, i.e. a smoother-looking curve. This mattered
-// more once the rendered road width dropped to match the in-city road's
-// own (narrower) width: the same kink that was easy to miss on a wide
-// road reads as a visible little elbow on a narrow one.
-const DETOUR_ARC_POINTS = 14
-// Beyond the exact exclusion radius: a straight chord between two points
-// on the same circle sags slightly *inside* that circle, so pushing points
-// to exactly clearWorldRadius still let the connecting legs dip a little
-// under it (verified: with no margin at all the closest approach landed
-// just under the target). 1.3x comfortably absorbs that sag at
-// DETOUR_ARC_POINTS's spacing without needing to solve for the exact
-// chord-sag amount.
-const DETOUR_CLEAR_MARGIN = 1.3
-
-// The a-b path bent around a single obstacle, as a run of waypoints to
-// splice in between a and b. Pushing only the *single* deepest point away
-// from the obstacle (an earlier version of this function did exactly
-// that) isn't enough on its own, since the straight legs connecting that
-// one point back to a and b are then free to cut back through the
-// exclusion zone on either side of it, verified: they routinely did.
-// Instead, sample several points along the stretch of the *original*
-// straight path that actually falls inside the exclusion zone (found via
-// findBoundaryCrossings) and push each of them out individually,
-// connecting the pushed points in sequence approximates an arc around the
-// obstacle's boundary, since nearby points pushed onto (approximately)
-// the same circle stay close to that circle's own arc when connected by
-// short straight chords.
-function buildFeatureDetour(
-  a: Vec3,
-  b: Vec3,
-  obstaclePosition: Vec3,
-  clearWorldRadius: number,
-  radius: number,
-): Vec3[] {
-  const { entryT, exitT } = findBoundaryCrossings(a, b, obstaclePosition, clearWorldRadius, radius)
-  if (entryT >= exitT) return []
-
-  const targetRadius = clearWorldRadius * DETOUR_CLEAR_MARGIN
-  const waypoints: Vec3[] = []
-  for (let i = 0; i <= DETOUR_ARC_POINTS + 1; i++) {
-    const t = entryT + (exitT - entryT) * (i / (DETOUR_ARC_POINTS + 1))
-    const onPath = slerpUnit(a, b, t)
-    waypoints.push(pushAwayFromObstacle(onPath, obstaclePosition, targetRadius, radius))
-  }
-  return waypoints
-}
-
-// Splits a straight city-edge-to-city-edge connection into waypoints that
-// route around any lake whose exclusion zone the direct path would
-// otherwise cut through, ordered along the path. A lake isn't a place a
-// road could instead be routed *through* via a third city the way an
-// intervening city is handled (see buildPlanetRoads), it just needs to be
-// gone around — unlike a mountain, which isn't a discrete obstacle at
-// all anymore (see lib/terrain.ts), a road just rides over one instead.
-function buildRoadWaypoints(a: Vec3, b: Vec3, radius: number): Vec3[] {
-  const intersecting = PLANET_FEATURES.map((f) => ({
-    position: f.position,
-    clearRadius: featureRadius(f, radius) + FEATURE_DETOUR_CLEARANCE_MARGIN,
-  }))
-    .filter((f) => pathMinWorldDist(a, b, f.position, radius) < f.clearRadius)
-    .map((f) => ({ ...f, t: closestApproachT(a, b, f.position) }))
-    .sort((x, y) => x.t - y.t)
-
-  if (intersecting.length === 0) return [a, b]
-
-  const waypoints: Vec3[] = [a]
-  for (const feature of intersecting) {
-    waypoints.push(...buildFeatureDetour(a, b, feature.position, feature.clearRadius, radius))
-  }
-  waypoints.push(b)
-  return waypoints
+  return false
 }
 
 // "Roads between nearby cities" as a K-nearest-neighbor graph (union, not
@@ -565,11 +310,9 @@ function buildRoadWaypoints(a: Vec3, b: Vec3, radius: number): Vec3[] {
 //
 // A connection is dropped outright (not drawn at all) if the straight path
 // between those two edge points would cut through a *third* city's own
-// footprint, that third city is presumably already connected to both ends
-// via its own KNN edges, so the direct link becomes redundant as well as
-// visually wrong (a road cutting across someone else's rooftops). A lake
-// in the way is handled differently, buildRoadWaypoints bends the path
-// around it instead, since there's no third city to route through.
+// footprint (redundant anyway, that third city is presumably already
+// connected to both ends via its own KNN edges) or would cross open ocean
+// anywhere along its length (see crossesOcean).
 export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): PlanetRoad[] {
   if (cities.length < 2) return []
 
@@ -605,33 +348,27 @@ export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): 
         return pathMinWorldDist(edgeI, edgeJ, c.position, radius) < clearRadius
       })
       if (blockedByOtherCity) continue
+      if (crossesOcean(edgeI, edgeJ)) continue
 
-      const waypoints = buildRoadWaypoints(edgeI, edgeJ, radius)
-
-      for (let leg = 0; leg < waypoints.length - 1; leg++) {
-        const legA = waypoints[leg]
-        const legB = waypoints[leg + 1]
-
-        for (let s = 0; s < ROAD_SEGMENTS; s++) {
-          const p0 = slerpUnit(legA, legB, s / ROAD_SEGMENTS)
-          const p1 = slerpUnit(legA, legB, (s + 1) / ROAD_SEGMENTS)
-          // Each sampled point scaled by its *own* terrain radius, not the
-          // flat planet radius, so the road visibly rises and falls with
-          // the ground beneath it instead of floating at a constant
-          // height cutting through hills. Plus a small lift (see
-          // ROAD_SURFACE_LIFT) so it stays clear of the ground even where
-          // terrain curves between this sample and the next.
-          const r0 = terrainRadius(p0[0], p0[1], p0[2], radius) + ROAD_SURFACE_LIFT
-          const r1 = terrainRadius(p1[0], p1[1], p1[2], radius) + ROAD_SURFACE_LIFT
-          roads.push({
-            x1: p0[0] * r0,
-            y1: p0[1] * r0,
-            z1: p0[2] * r0,
-            x2: p1[0] * r1,
-            y2: p1[1] * r1,
-            z2: p1[2] * r1,
-          })
-        }
+      for (let s = 0; s < ROAD_SEGMENTS; s++) {
+        const p0 = slerpUnit(edgeI, edgeJ, s / ROAD_SEGMENTS)
+        const p1 = slerpUnit(edgeI, edgeJ, (s + 1) / ROAD_SEGMENTS)
+        // Each sampled point scaled by its *own* terrain radius, not the
+        // flat planet radius, so the road visibly rises and falls with
+        // the ground beneath it instead of floating at a constant
+        // height cutting through hills. Plus a small lift (see
+        // ROAD_SURFACE_LIFT) so it stays clear of the ground even where
+        // terrain curves between this sample and the next.
+        const r0 = terrainRadius(p0[0], p0[1], p0[2], radius) + ROAD_SURFACE_LIFT
+        const r1 = terrainRadius(p1[0], p1[1], p1[2], radius) + ROAD_SURFACE_LIFT
+        roads.push({
+          x1: p0[0] * r0,
+          y1: p0[1] * r0,
+          z1: p0[2] * r0,
+          x2: p1[0] * r1,
+          y2: p1[1] * r1,
+          z2: p1[2] * r1,
+        })
       }
     }
   }

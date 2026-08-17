@@ -3,8 +3,13 @@
 import { useFrame, type ThreeEvent } from '@react-three/fiber'
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { featureRadius, PLANET_FEATURES, WATER_COUNT } from '@/lib/planet-builder'
-import { groundSurfaceEpsilon, TERRAIN_AMPLITUDE_FRACTION, terrainRadius } from '@/lib/terrain'
+import {
+  buildHeightmapData,
+  groundSurfaceEpsilon,
+  SEA_LEVEL_HEIGHT01,
+  TERRAIN_AMPLITUDE_FRACTION,
+  terrainRadius,
+} from '@/lib/terrain'
 
 const SURFACE_VERTEX = `
   varying vec3 vPos;
@@ -21,58 +26,30 @@ const SURFACE_VERTEX = `
 // accepted stylized trade for staying a single cheap analytic grid rather
 // than a texture.
 //
-// Water bodies (lakes/oceans) are painted directly onto this same surface
-// rather than rendered as separate meshes — three separate attempts at a
-// second mesh (flat tangent-plane projection, then exact spherical
-// polar coordinates, each with its own z-fighting/elevation fix) all left
-// some visible seam against the ground, because it *was* a second
-// surface, however precisely aligned. Painting the color into this
-// shader instead means water is, by construction, the exact same surface
-// as the ground everywhere — there is no second mesh left to misalign.
+// Land and ocean are read straight off a heightmap texture baked from the
+// exact same terrainHeight01() field lib/planet-builder.ts uses for city
+// placement and road routing (see buildHeightmapData in lib/terrain.ts) —
+// one continuous field thresholded at SEA_LEVEL_HEIGHT01, not a list of
+// separately placed/sized shapes, so the coastline comes out naturally
+// connected instead of a cluster of circles that happen to be near each
+// other. The circuit grid is masked to land only (open ocean reads as
+// quiet space between "components," not the same trace pattern
+// everywhere), and the water color itself shifts toward the site's cyan
+// "data" accent near the shoreline, staying deep violet further out —
+// depth read as color, not a flat fill.
 const SURFACE_FRAGMENT = `
   varying vec3 vPos;
   uniform float uTime;
   uniform vec3 baseColor;
-  uniform vec3 waterColor;
-  uniform vec3 waterCenters[${WATER_COUNT}];
-  uniform float waterAngularRadii[${WATER_COUNT}];
-  uniform float waterSeeds[${WATER_COUNT}];
-  uniform int waterCount;
+  uniform vec3 waterColorDeep;
+  uniform vec3 waterColorShallow;
+  uniform sampler2D uHeightMap;
+  uniform float uSeaLevel;
+  uniform float uCoastBand;
+  uniform float uShallowBand;
 
   float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-  }
-
-  // Same organic-shoreline wobble planet-features.tsx used to compute in
-  // JS to build a separate mesh's outline — now evaluated per-fragment
-  // instead, directly against this surface's own vertices.
-  float waterWobble(float azimuth, float seed) {
-    return 1.0
-      + 0.22 * sin(azimuth * 3.0 + seed * 1.7)
-      + 0.12 * sin(azimuth * 5.0 - seed * 2.2)
-      + 0.07 * sin(azimuth * 9.0 + seed * 4.1);
-  }
-
-  // Is this fragment (direction n) inside the water body centered on
-  // center with base angular radius baseRadius? Reconstructs the same
-  // (angular distance, azimuth) polar coordinates the old separate mesh
-  // used to build its shoreline from, but the other way around: given a
-  // point, not given a target angle.
-  float waterCoverage(vec3 n, vec3 center, float baseRadius, float seed) {
-    float d = clamp(dot(n, center), -1.0, 1.0);
-    float angularDist = acos(d);
-
-    vec3 arbitraryUp = abs(center.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangentA = normalize(cross(arbitraryUp, center));
-    vec3 tangentB = cross(center, tangentA);
-    vec3 perp = n - center * d;
-    float azimuth = atan(dot(perp, tangentB), dot(perp, tangentA));
-
-    float edgeRadius = baseRadius * waterWobble(azimuth, seed);
-    // A soft edge (in angular terms, so it stays a consistent width
-    // regardless of a body's own size) rather than a hard cutoff, so the
-    // shoreline anti-aliases instead of showing a jagged pixel edge.
-    return 1.0 - smoothstep(edgeRadius - 0.004, edgeRadius, angularDist);
   }
 
   void main() {
@@ -84,6 +61,25 @@ const SURFACE_FRAGMENT = `
     const float LON_LINES = 28.0;
     const float LAT_LINES = 14.0;
 
+    // Same (lon, lat) -> texture UV convention buildHeightmapData() uses
+    // to bake the texture in the first place, so a fragment here samples
+    // the height for its own actual direction, not some other point.
+    float texU = lon / (2.0 * PI) + 0.5;
+    float texV = lat / PI + 0.5;
+    float height01 = texture2D(uHeightMap, vec2(texU, texV)).r * 2.0 - 1.0;
+
+    // Soft-edged land/ocean split (a hard step would alias into a jagged
+    // coastline at the pixel level); the shallow-water tint band is
+    // separate and wider, so it can fade gently well before the coastline
+    // itself starts anti-aliasing.
+    float landMask = smoothstep(uSeaLevel - uCoastBand, uSeaLevel + uCoastBand, height01);
+    // 0 in deep water (far below sea level), ramping up to 1 right at the
+    // shoreline — NOT inverted, height01 rising *toward* uSeaLevel is what
+    // "shallower" means here.
+    float shallow = clamp(smoothstep(uSeaLevel - uShallowBand, uSeaLevel, height01), 0.0, 1.0);
+    vec3 oceanColor = mix(waterColorDeep, waterColorShallow, shallow);
+    vec3 base = mix(oceanColor, baseColor, landMask);
+
     float u = (lon / (2.0 * PI) + 0.5) * LON_LINES;
     float v = (lat / PI + 0.5) * LAT_LINES;
 
@@ -91,18 +87,6 @@ const SURFACE_FRAGMENT = `
     float dv = fwidth(v) + 1e-4;
     float gridU = 1.0 - clamp(abs(fract(u - 0.5) - 0.5) / du, 0.0, 1.0);
     float gridV = 1.0 - clamp(abs(fract(v - 0.5) - 0.5) / dv, 0.0, 1.0);
-
-    // The original flat planet color (#0d0818), kept as a single flat
-    // shade rather than the lit-hemisphere gradient tried earlier — that
-    // read as "mid" next to the new sky, the grid is doing the visual work
-    // now, not a fake key light. Comes in as a uniform (THREE.Color, which
-    // color-manages the hex → linear conversion correctly) rather than a
-    // hand-converted vec3 literal — dividing the hex bytes by 255 and
-    // writing that straight into gl_FragColor is *sRGB* still, the
-    // renderer's own linear→sRGB output pass then re-encodes it a second
-    // time, which is what made the very first attempt at this render
-    // noticeably lighter than the real #0d0818.
-    vec3 base = baseColor;
 
     float ix = floor(u);
     float iy = floor(v);
@@ -158,21 +142,14 @@ const SURFACE_FRAGMENT = `
       overlay += glintColor * gridV * glint * 1.05;
     }
 
+    // Confined to land — the circuit board is where the "components" are,
+    // open ocean reads as quiet space between them instead of the same
+    // uniform trace pattern regardless of what's underneath it.
+    overlay *= landMask;
+
     vec3 ground = base + overlay * poleFade;
 
-    // Painted last, over everything else — a water body hides the grid
-    // beneath it (real water sits over the ground, not the other way
-    // around) rather than blending translucently with it.
-    float waterFactor = 0.0;
-    for (int i = 0; i < ${WATER_COUNT}; i++) {
-      if (i >= waterCount) break;
-      waterFactor = max(
-        waterFactor,
-        waterCoverage(n, waterCenters[i], waterAngularRadii[i], waterSeeds[i])
-      );
-    }
-
-    gl_FragColor = vec4(mix(ground, waterColor, waterFactor), 1.0);
+    gl_FragColor = vec4(ground, 1.0);
   }
 `
 
@@ -248,6 +225,14 @@ function buildTerrainSurfaceGeometry(radius: number): THREE.BufferGeometry {
   return geometry
 }
 
+// Baked once (deterministic, same seed as every other terrain read in the
+// app) and shared by every mounted PlanetSurface instance, the same
+// "compute the fixed thing once at module scope" pattern lib/planet-
+// builder.ts already used for its own now-removed water-body list.
+const HEIGHTMAP_WIDTH = 512
+const HEIGHTMAP_HEIGHT = 256
+const heightmapData = buildHeightmapData(HEIGHTMAP_WIDTH, HEIGHTMAP_HEIGHT)
+
 // The planet ball, replacing the flat single-color sphere this used to be.
 // The halo mesh is excluded from raycasting so it never steals the
 // placement click meant for the surface mesh underneath it.
@@ -269,38 +254,46 @@ export default function PlanetSurface({
 
   const surfaceGeometry = useMemo(() => buildTerrainSurfaceGeometry(radius), [radius])
 
-  // Water bodies' shader uniforms — angular radius resolved from each
-  // body's own world-unit featureRadius() here (the exact same
-  // conversion the old separate mesh used), fixed-length arrays padded
-  // out to WATER_COUNT since GLSL array uniforms can't be dynamically
-  // sized, actual usable count passed separately as waterCount.
-  const surfaceUniforms = useMemo(() => {
-    const centers: THREE.Vector3[] = []
-    const angularRadii: number[] = []
-    const seeds: number[] = []
-    PLANET_FEATURES.forEach((f, i) => {
-      const normal = new THREE.Vector3(f.position[0], f.position[1], f.position[2]).normalize()
-      const surfaceR = terrainRadius(normal.x, normal.y, normal.z, radius)
-      const worldRadius = featureRadius(f, radius)
-      angularRadii.push(2 * Math.asin(Math.min(1, worldRadius / (2 * surfaceR))))
-      centers.push(normal)
-      seeds.push(i)
-    })
-    while (centers.length < WATER_COUNT) {
-      centers.push(new THREE.Vector3(0, 0, 0))
-      angularRadii.push(0)
-      seeds.push(0)
-    }
-    return {
+  // Single-channel (RedFormat, WebGL2) since it's just an elevation value,
+  // no color — flipY explicit rather than relying on DataTexture's default,
+  // since buildHeightmapData()'s row-0-is-the-south-pole convention has to
+  // match whichever way the GPU actually samples row 0 at texture-V 0.
+  // wrapS repeats so the longitude seam at lon = ±PI blends across the u=0
+  // /u=1 boundary instead of showing a hard seam.
+  const heightmapTexture = useMemo(() => {
+    const texture = new THREE.DataTexture(
+      heightmapData,
+      HEIGHTMAP_WIDTH,
+      HEIGHTMAP_HEIGHT,
+      THREE.RedFormat,
+      THREE.UnsignedByteType,
+    )
+    texture.wrapS = THREE.RepeatWrapping
+    texture.wrapT = THREE.ClampToEdgeWrapping
+    texture.minFilter = THREE.LinearFilter
+    texture.magFilter = THREE.LinearFilter
+    texture.flipY = false
+    texture.needsUpdate = true
+    return texture
+  }, [])
+
+  const surfaceUniforms = useMemo(
+    () => ({
       uTime: { value: 0 },
       baseColor: { value: new THREE.Color('#0d0818') },
-      waterColor: { value: new THREE.Color('#9d4dff') },
-      waterCenters: { value: centers },
-      waterAngularRadii: { value: angularRadii },
-      waterSeeds: { value: seeds },
-      waterCount: { value: PLANET_FEATURES.length },
-    }
-  }, [radius])
+      waterColorDeep: { value: new THREE.Color('#9d4dff') },
+      // Violet mixed only 40% toward the site's cyan accent, not a pure
+      // cyan — even right at the shoreline the water should read as a
+      // tinted violet, not a different hue entirely, matching the
+      // depth-tint mockup the user actually approved (see round notes).
+      waterColorShallow: { value: new THREE.Color('#7d8bff') },
+      uHeightMap: { value: heightmapTexture },
+      uSeaLevel: { value: SEA_LEVEL_HEIGHT01 },
+      uCoastBand: { value: 0.01 },
+      uShallowBand: { value: 0.07 },
+    }),
+    [heightmapTexture],
+  )
   const haloUniforms = useMemo(
     () => ({
       colorInner: { value: new THREE.Color('#ff00ff') },

@@ -1,7 +1,7 @@
 'use client'
 
-import { Billboard, Text } from '@react-three/drei'
-import { useMemo } from 'react'
+import { Billboard, Line, Text } from '@react-three/drei'
+import { useMemo, useState } from 'react'
 import * as THREE from 'three'
 import BuildingField from '@/components/building-field'
 import Ground from '@/components/ground'
@@ -10,6 +10,46 @@ import { terrainRadius } from '@/lib/terrain'
 import type { Building, PlanetCity as PlanetCityData } from '@/lib/types'
 
 const UP = new THREE.Vector3(0, 1, 0)
+
+// Corner-bracket reticle, the same motif .polis-hud-panel already draws in
+// 2D (CSS corner gradients), rebuilt here as four short polylines so it can
+// frame a city's floating username label in the 3D scene — a targeting-
+// lock read when hovering a city, doubling as a hover indicator rather
+// than being decoration with no function.
+function CityReticle({ width, height }: { width: number; height: number }) {
+  const hw = width / 2
+  const hh = height / 2
+  const arm = Math.min(2.2, Math.min(width, height) * 0.32)
+  const corners: Array<Array<[number, number, number]>> = [
+    [
+      [-hw, hh - arm, 0],
+      [-hw, hh, 0],
+      [-hw + arm, hh, 0],
+    ],
+    [
+      [hw - arm, hh, 0],
+      [hw, hh, 0],
+      [hw, hh - arm, 0],
+    ],
+    [
+      [-hw, -hh + arm, 0],
+      [-hw, -hh, 0],
+      [-hw + arm, -hh, 0],
+    ],
+    [
+      [hw, -hh + arm, 0],
+      [hw, -hh, 0],
+      [hw - arm, -hh, 0],
+    ],
+  ]
+  return (
+    <>
+      {corners.map((points, i) => (
+        <Line key={i} points={points} color="#4de8ff" lineWidth={1.6} transparent opacity={0.9} />
+      ))}
+    </>
+  )
+}
 
 // A city, "stuck" onto a point on the planet's surface, its local origin
 // sits at unitVector*radius, and the wrapping group is rotated so local +Y
@@ -54,9 +94,15 @@ export default function PlanetCity({
     () => Math.max(...city.buildings.map((b) => b.height), 0) + 8,
     [city.buildings],
   )
+  const [isHovered, setIsHovered] = useState(false)
 
   return (
-    <group position={position} quaternion={quaternion}>
+    <group
+      position={position}
+      quaternion={quaternion}
+      onPointerOver={() => setIsHovered(true)}
+      onPointerOut={() => setIsHovered(false)}
+    >
       <BuildingField
         buildings={city.buildings}
         onHover={onHover}
@@ -86,6 +132,23 @@ export default function PlanetCity({
         >
           {city.username}
         </Text>
+        {/* Sibling of the Text, inside the *same* Billboard, not a second
+            Billboard offset along the outer group's own local Y — that
+            axis is the surface normal at this city's spot, whose on-screen
+            "up-ness" varies with camera angle (near the sub-camera point
+            it points almost straight at the camera, barely up on screen
+            at all), so a second Billboard positioned along it drifted
+            visibly off from the text for cities near screen-center. A
+            Billboard's own local Y, once it's already facing the camera,
+            reliably means "up on screen" the same way anchorY="bottom"
+            already relies on for the text above, so the bracket now uses
+            that same frame to stay actually centered on the label
+            regardless of where the city sits. */}
+        {isHovered && (
+          <group position={[0, 1.3, 0]}>
+            <CityReticle width={Math.max(10, city.username.length * 1.9)} height={5} />
+          </group>
+        )}
       </Billboard>
     </group>
   )

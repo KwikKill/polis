@@ -78,3 +78,44 @@ export function terrainRadius(
 export function groundSurfaceEpsilon(baseRadius: number): number {
   return Math.max(baseRadius * 0.002, 0.15)
 }
+
+// Below this, a point counts as ocean; at or above, land. Not a symmetric
+// 0 (roughly a 50/50 split by sampled surface area) — set above zero on
+// purpose, so ocean stays the majority feature rather than mostly-dry
+// ground. Measured (200k uniform sphere samples, see the round-23 dev
+// note) rather than eyeballed: 0.15 gave 65.6% ocean / 34.4% land, tuned
+// down to 0.05 (55.6% / 44.4%) after direct feedback that the first pass
+// had too little land. The single constant every water-related decision
+// (rendering, city placement, road routing) reads from, so none of them
+// can disagree about where the coastline is.
+export const SEA_LEVEL_HEIGHT01 = 0.05
+
+// A flat equirectangular heightmap, one texel per (lon, lat) sample of the
+// same terrainHeight01() every other water-related check already uses,
+// baked once so the fragment shader can look elevation up per-fragment
+// via a texture instead of needing a hand-ported GLSL copy of the noise
+// algorithm (which would risk quietly drifting from this one, the actual
+// source of truth, the moment either side's constants changed). Row 0 is
+// the south pole (lat = -PI/2); column 0 is lon = -PI — this has to match
+// planet-surface.tsx's own `lon = atan(n.z, n.x)` / `lat = asin(n.y)`
+// convention exactly, or the rendered coastline and the invisible
+// placement/routing rules below would silently disagree about where dry
+// land is.
+export function buildHeightmapData(width: number, height: number): Uint8Array {
+  const data = new Uint8Array(width * height)
+  for (let row = 0; row < height; row++) {
+    const v = row / (height - 1)
+    const lat = (v - 0.5) * Math.PI
+    const cosLat = Math.cos(lat)
+    const y = Math.sin(lat)
+    for (let col = 0; col < width; col++) {
+      const u = col / width
+      const lon = (u - 0.5) * Math.PI * 2
+      const x = cosLat * Math.cos(lon)
+      const z = cosLat * Math.sin(lon)
+      const h01 = Math.max(-1, Math.min(1, terrainHeight01(x, y, z)))
+      data[row * width + col] = Math.round(((h01 + 1) / 2) * 255)
+    }
+  }
+  return data
+}
