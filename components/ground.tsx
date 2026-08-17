@@ -1,6 +1,7 @@
 'use client'
 
 import { MeshReflectorMaterial } from '@react-three/drei'
+import { useFrame } from '@react-three/fiber'
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { buildCurvedDiscGeometry, curvedLocalPlacement, type SurfaceCurvature } from '@/lib/sphere-curve'
@@ -14,27 +15,34 @@ const ROAD_WIDTH = 0.55
 const ROAD_HEIGHT = 0.05
 const ROAD_Y = 0.03
 const ROAD_COLOR = '#9d1fb8'
+// A "data packet" travelling along each road segment's own length at a
+// roughly constant world-space speed, the same idiom planet-surface.tsx's
+// ground shader already uses for its circuit-grid bus lines, now on the
+// actual streets instead of only the ground beneath them. Replaces the
+// static parked-vehicle field this file used to have (see VehicleField's
+// removal) — moving light instead of motionless "traffic."
+const ROAD_GLINT_COLOR = new THREE.Color(1.0, 0.55, 0.95)
+const ROAD_GLINT_SPEED = 6 // world units per second
+const ROAD_GLINT_WIDTH = 0.06
+const ROAD_GLINT_INTENSITY = 1.6
 
 const SIDEWALK_WIDTH = 0.32
 const SIDEWALK_HEIGHT = 0.035
 const SIDEWALK_Y = 0.025
 const SIDEWALK_COLOR = '#4a4258'
 
-const MAX_VEHICLES = 45
-const VEHICLE_MIN_ROAD_LENGTH = 2.2
-const VEHICLE_SPAWN_CHANCE = 0.4
-const VEHICLE_OFFSET = 0.28
-const VEHICLE_SIZE: [number, number, number] = [0.5, 0.2, 0.26]
-const VEHICLE_COLORS = ['#e6e6f0', '#7ee8ff', '#ffb454', '#3a3244']
-
 interface Point {
   x: number
   z: number
 }
 
-interface Vehicle extends Point {
-  angle: number
-  color: string
+// Deterministic-ish per-segment phase from its own position, not
+// Math.random() — keeps two segments that happen to render on the same
+// frame from ever coincidentally sharing a phase, without needing to carry
+// a separate seed value around.
+function hashPhase(x: number, z: number): number {
+  const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453
+  return s - Math.floor(s)
 }
 
 function Streetlight({ x, z, curvature }: Point & { curvature?: SurfaceCurvature }) {
@@ -92,36 +100,6 @@ function streetlightsAlongRoads(roads: Road[]): Point[] {
   return shuffleAndCap(candidates, MAX_STREETLIGHTS)
 }
 
-// A couple of parked-looking blocks along wider gaps, cheap street-level
-// life, same technique as the streetlights but on the opposite shoulder.
-function vehiclesAlongRoads(roads: Road[]): Vehicle[] {
-  const candidates: Vehicle[] = []
-
-  for (const r of roads) {
-    if (Math.random() > VEHICLE_SPAWN_CHANCE) continue
-    const dx = r.x2 - r.x1
-    const dz = r.z2 - r.z1
-    const length = Math.hypot(dx, dz)
-    if (length < VEHICLE_MIN_ROAD_LENGTH) continue
-
-    const nx = dx / length
-    const nz = dz / length
-    const side = Math.random() < 0.5 ? 1 : -1
-    const px = -nz * side
-    const pz = nx * side
-    const t = 0.3 + Math.random() * 0.4
-
-    candidates.push({
-      x: r.x1 + dx * t + px * VEHICLE_OFFSET,
-      z: r.z1 + dz * t + pz * VEHICLE_OFFSET,
-      angle: Math.atan2(dx, dz),
-      color: VEHICLE_COLORS[Math.floor(Math.random() * VEHICLE_COLORS.length)],
-    })
-  }
-
-  return shuffleAndCap(candidates, MAX_VEHICLES)
-}
-
 function shuffleAndCap<T>(items: T[], max: number): T[] {
   if (items.length <= max) return items
   for (let i = items.length - 1; i > 0; i--) {
@@ -170,28 +148,70 @@ function placeDummy(
 // its two endpoints.
 function RoadField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCurvature }) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
+  const shader = useRef<{ uniforms: { uTime: { value: number } } } | null>(null)
 
   useLayoutEffect(() => {
     if (!mesh.current || roads.length === 0) return
     const dummy = new THREE.Object3D()
+    const phases = new Float32Array(roads.length)
+    const lengths = new Float32Array(roads.length)
     roads.forEach((r, i) => {
       const dx = r.x2 - r.x1
       const dz = r.z2 - r.z1
       const length = Math.hypot(dx, dz)
-      placeDummy(dummy, (r.x1 + r.x2) / 2, ROAD_Y, (r.z1 + r.z2) / 2, Math.atan2(dx, dz), curvature)
+      const mx = (r.x1 + r.x2) / 2
+      const mz = (r.z1 + r.z2) / 2
+      placeDummy(dummy, mx, ROAD_Y, mz, Math.atan2(dx, dz), curvature)
       dummy.scale.set(ROAD_WIDTH, ROAD_HEIGHT, length)
       dummy.updateMatrix()
       mesh.current.setMatrixAt(i, dummy.matrix)
+      phases[i] = hashPhase(mx, mz)
+      lengths[i] = length
     })
     mesh.current.instanceMatrix.needsUpdate = true
+    mesh.current.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1))
+    mesh.current.geometry.setAttribute('aLength', new THREE.InstancedBufferAttribute(lengths, 1))
   }, [roads, curvature])
+
+  useFrame(({ clock }) => {
+    if (shader.current) shader.current.uniforms.uTime.value = clock.elapsedTime
+  })
 
   if (roads.length === 0) return null
 
   return (
     <instancedMesh ref={mesh} args={[undefined, undefined, roads.length]}>
       <boxGeometry args={[1, 1, 1]} />
-      <meshBasicMaterial color={ROAD_COLOR} toneMapped={false} />
+      <meshBasicMaterial
+        color={ROAD_COLOR}
+        toneMapped={false}
+        onBeforeCompile={(s) => {
+          s.uniforms.uTime = { value: 0 }
+          s.uniforms.glintColor = { value: ROAD_GLINT_COLOR }
+          s.vertexShader = s.vertexShader
+            .replace(
+              '#include <common>',
+              '#include <common>\nattribute float aPhase;\nattribute float aLength;\nvarying float vLocalZ;\nvarying float vPhase;\nvarying float vLength;',
+            )
+            .replace(
+              '#include <begin_vertex>',
+              '#include <begin_vertex>\nvLocalZ = position.z;\nvPhase = aPhase;\nvLength = aLength;',
+            )
+          s.fragmentShader = s.fragmentShader
+            .replace(
+              '#include <common>',
+              '#include <common>\nuniform float uTime;\nuniform vec3 glintColor;\nvarying float vLocalZ;\nvarying float vPhase;\nvarying float vLength;',
+            )
+            .replace(
+              '#include <color_fragment>',
+              `#include <color_fragment>
+              float roadGT = fract(vLocalZ + 0.5 + uTime * ${ROAD_GLINT_SPEED.toFixed(1)} / max(vLength, 0.5) + vPhase);
+              float roadGlint = 1.0 - smoothstep(0.0, ${ROAD_GLINT_WIDTH.toFixed(2)}, roadGT);
+              diffuseColor.rgb += glintColor * roadGlint * ${ROAD_GLINT_INTENSITY.toFixed(1)};`,
+            )
+          shader.current = s as unknown as { uniforms: { uTime: { value: number } } }
+        }}
+      />
     </instancedMesh>
   )
 }
@@ -241,38 +261,11 @@ function SidewalkField({ roads, curvature }: { roads: Road[]; curvature?: Surfac
   )
 }
 
-function VehicleField({ vehicles, curvature }: { vehicles: Vehicle[]; curvature?: SurfaceCurvature }) {
-  const mesh = useRef<THREE.InstancedMesh>(null!)
-
-  useLayoutEffect(() => {
-    if (!mesh.current || vehicles.length === 0) return
-    const dummy = new THREE.Object3D()
-    const color = new THREE.Color()
-    vehicles.forEach((v, i) => {
-      placeDummy(dummy, v.x, VEHICLE_SIZE[1] / 2 + 0.02, v.z, v.angle, curvature)
-      dummy.scale.set(...VEHICLE_SIZE)
-      dummy.updateMatrix()
-      mesh.current.setMatrixAt(i, dummy.matrix)
-      mesh.current.setColorAt(i, color.set(v.color))
-    })
-    mesh.current.instanceMatrix.needsUpdate = true
-    if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true
-  }, [vehicles, curvature])
-
-  if (vehicles.length === 0) return null
-
-  return (
-    <instancedMesh ref={mesh} args={[undefined, undefined, vehicles.length]}>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshBasicMaterial toneMapped={false} />
-    </instancedMesh>
-  )
-}
-
 // Wet-asphalt reflection (Blade Runner), plus a road network, the Voronoi
 // cell boundary of every building, so streets run through the real gaps
-// between buildings, with sidewalks, streetlights and parked vehicles
-// layered along it.
+// between buildings, with sidewalks and streetlights layered along it, and
+// a light pulse travelling each road segment's own length in place of the
+// static parked vehicles this file used to scatter along wider gaps.
 //
 // `reflective`/`groundRadius` exist for the planet view, where many full
 // cities render at once: MeshReflectorMaterial is a real extra scene
@@ -299,7 +292,6 @@ export default function Ground({
   curvature?: SurfaceCurvature
 }) {
   const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
-  const vehicles = useMemo(() => vehiclesAlongRoads(roads), [roads])
 
   const curvedGeometry = useMemo(() => {
     if (!curvature) return null
@@ -342,7 +334,6 @@ export default function Ground({
 
       <SidewalkField roads={roads} curvature={curvature} />
       <RoadField roads={roads} curvature={curvature} />
-      <VehicleField vehicles={vehicles} curvature={curvature} />
 
       {streetlights.map((l, i) => (
         <Streetlight key={i} x={l.x} z={l.z} curvature={curvature} />

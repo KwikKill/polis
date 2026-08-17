@@ -33,10 +33,16 @@ export default async function PlanetPage() {
             <p className="font-display text-xs uppercase tracking-widest text-foreground/60">
               Polis
             </p>
-            <DecryptText as="p" text="The planet" className="polis-glow-text font-display text-lg" />
+            <DecryptText
+              as="p"
+              text="The planet"
+              startDelayMs={250}
+              className="polis-glow-text font-display text-lg"
+            />
             <DecryptText
               as="p"
               text={`${cities.length} ${cities.length === 1 ? 'city' : 'cities'}`}
+              startDelayMs={650}
               className="text-xs text-data"
             />
           </div>

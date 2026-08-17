@@ -158,6 +158,17 @@
       opacity: 1;
     }
   }
+
+  /* Opt-in override for a page's own entrance sequence (homepage hero,
+     /planet's HUD panel): holds its .polis-btn children back until roughly
+     when that page's own headline has finished decrypting, instead of the
+     class's normal near-instant 0.12s delay. Scoped to this wrapper only —
+     .polis-btn's own default stays untouched everywhere else (tooltips,
+     placement-mode panels, dev panels), which still need to appear
+     immediately, not on a fixed multi-beat schedule. */
+  .polis-boot-stagger .polis-btn {
+    animation-delay: 1s;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

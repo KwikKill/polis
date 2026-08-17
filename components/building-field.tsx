@@ -1,5 +1,6 @@
 'use client'
 
+import { useFrame } from '@react-three/fiber'
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { curvedLocalPlacement, type SurfaceCurvature } from '@/lib/sphere-curve'
@@ -16,6 +17,14 @@ const MAX_WINDOW_COLS = 4
 const WINDOW_LIT_PROB_ACTIVE = 0.75
 const WINDOW_LIT_PROB_STALE = 0.1
 const WINDOW_COLOR = '#ffe3a8'
+// Only a minority of lit windows actually flicker (a hashed per-instance
+// amount, not a shared uniform pulse) — the rest stay steady, so it reads
+// as a few offices/apartments with a bad fixture rather than the whole
+// tower breathing in sync.
+const WINDOW_FLICKER_PROB = 0.12
+const WINDOW_FLICKER_MIN = 0.35
+const WINDOW_FLICKER_MAX = 0.85
+const WINDOW_FLICKER_SPEED = 2.0
 const ROOF_PROP_COLOR = '#342e40'
 const TIER_MIN_HEIGHT = 10 // only buildings at least this tall get a setback tier
 const TIER_PROBABILITY = 0.5
@@ -70,6 +79,8 @@ interface WindowInstance {
   y: number
   z: number
   rotationY: number
+  phase: number
+  flicker: number
 }
 
 interface RoofProp {
@@ -164,6 +175,11 @@ function buildWindows(buildings: Building[]): WindowInstance[] {
             y: ((r + 0.5) / rows) * b.height,
             z: b.z + ((c + 0.5) / cols) * b.width - b.width / 2,
             rotationY: side === 1 ? Math.PI / 2 : -Math.PI / 2,
+            phase: Math.random() * Math.PI * 2,
+            flicker:
+              Math.random() < WINDOW_FLICKER_PROB
+                ? WINDOW_FLICKER_MIN + Math.random() * (WINDOW_FLICKER_MAX - WINDOW_FLICKER_MIN)
+                : 0,
           })
         }
       }
@@ -315,14 +331,29 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
   useLayoutEffect(() => {
     if (!windowMesh.current || windows.length === 0) return
     const dummy = new THREE.Object3D()
+    const phases = new Float32Array(windows.length)
+    const flickers = new Float32Array(windows.length)
     windows.forEach((w, i) => {
       placeDummy(dummy, w.x, w.y, w.z, w.rotationY, curvature)
       dummy.scale.set(WINDOW_WIDTH, WINDOW_HEIGHT, 1)
       dummy.updateMatrix()
       windowMesh.current.setMatrixAt(i, dummy.matrix)
+      phases[i] = w.phase
+      flickers[i] = w.flicker
     })
     windowMesh.current.instanceMatrix.needsUpdate = true
+    windowMesh.current.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1))
+    windowMesh.current.geometry.setAttribute('aFlicker', new THREE.InstancedBufferAttribute(flickers, 1))
   }, [windows, curvature])
+
+  // Captured once from onBeforeCompile below, then mutated in place every
+  // frame — three.js keeps reading the same object reference for a raw
+  // (non-ShaderMaterial) material's compiled uniforms, this is the
+  // standard way to animate an onBeforeCompile hook after the fact.
+  const windowShader = useRef<{ uniforms: { uTime: { value: number } } } | null>(null)
+  useFrame(({ clock }) => {
+    if (windowShader.current) windowShader.current.uniforms.uTime.value = clock.elapsedTime
+  })
 
   useLayoutEffect(() => {
     if (!roofPropMesh.current || roofProps.length === 0) return
@@ -376,7 +407,40 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
       {windows.length > 0 && (
         <instancedMesh ref={windowMesh} args={[undefined, undefined, windows.length]}>
           <planeGeometry args={[1, 1]} />
-          <meshBasicMaterial color={WINDOW_COLOR} toneMapped={false} side={THREE.DoubleSide} />
+          {/* A handful of windows dim and recover on a hashed sine phase
+              (aFlicker=0 for most, so they stay perfectly steady) — grafted
+              onto the stock material via onBeforeCompile rather than a full
+              custom shader, since everything else about a window (color,
+              double-sided plane) is still just meshBasicMaterial. */}
+          <meshBasicMaterial
+            color={WINDOW_COLOR}
+            toneMapped={false}
+            side={THREE.DoubleSide}
+            onBeforeCompile={(shader) => {
+              shader.uniforms.uTime = { value: 0 }
+              shader.vertexShader = shader.vertexShader
+                .replace(
+                  '#include <common>',
+                  '#include <common>\nattribute float aPhase;\nattribute float aFlicker;\nvarying float vPhase;\nvarying float vFlicker;',
+                )
+                .replace(
+                  '#include <begin_vertex>',
+                  '#include <begin_vertex>\nvPhase = aPhase;\nvFlicker = aFlicker;',
+                )
+              shader.fragmentShader = shader.fragmentShader
+                .replace(
+                  '#include <common>',
+                  '#include <common>\nuniform float uTime;\nvarying float vPhase;\nvarying float vFlicker;',
+                )
+                .replace(
+                  '#include <color_fragment>',
+                  `#include <color_fragment>
+                  float windowFlickerFactor = 1.0 - vFlicker * (0.5 + 0.5 * sin(uTime * ${WINDOW_FLICKER_SPEED.toFixed(1)} + vPhase));
+                  diffuseColor.rgb *= windowFlickerFactor;`,
+                )
+              windowShader.current = shader as unknown as { uniforms: { uTime: { value: number } } }
+            }}
+          />
         </instancedMesh>
       )}
 

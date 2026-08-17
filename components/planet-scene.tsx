@@ -8,6 +8,7 @@ import { useMemo, useState, useTransition } from 'react'
 import Footer from '@/components/footer'
 import PlanetCity from '@/components/planet-city'
 import PlanetCityPreview from '@/components/planet-city-preview'
+import PlanetClouds from '@/components/planet-clouds'
 import PlanetDataRings from '@/components/planet-data-rings'
 import PlanetRoads from '@/components/planet-roads'
 import PlanetSky from '@/components/planet-sky'
@@ -162,6 +163,7 @@ export default function PlanetScene({
         {/* Land, ocean and the circuit grid are all painted directly into
             PlanetSurface's own fragment shader — see planet-surface.tsx. */}
         <PlanetSurface radius={radius} onClick={handlePlanetClick} />
+        <PlanetClouds radius={radius} />
         <PlanetDataRings radius={radius} />
 
         <PlanetRoads roads={roads} />

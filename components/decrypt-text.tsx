@@ -32,11 +32,18 @@ export default function DecryptText({
   as: Tag = 'span',
   className,
   scrambleMs,
+  startDelayMs = 0,
 }: {
   text: string
   as?: 'h1' | 'p' | 'span'
   className?: string
   scrambleMs?: number
+  /** Delay before the scramble starts resolving, for staggering several of
+   * these against a page's own entrance sequence (see the boot-sequence
+   * note in globals.css). Shows a single static scrambled frame during the
+   * wait rather than sitting on the final text, so it reads as "still
+   * resolving" the whole time instead of two disconnected beats. */
+  startDelayMs?: number
 }) {
   const [display, setDisplay] = useState(text)
 
@@ -48,18 +55,31 @@ export default function DecryptText({
 
     const duration = scrambleMs ?? Math.min(900, Math.max(350, text.length * 28))
     let frame: number
-    const start = performance.now()
+    let startTimer: ReturnType<typeof setTimeout> | undefined
 
-    function tick(now: number) {
-      const t = Math.min(1, (now - start) / duration)
-      setDisplay(scrambleFrame(text, Math.floor(t * text.length)))
-      if (t < 1) frame = requestAnimationFrame(tick)
-      else setDisplay(text)
+    function begin() {
+      const start = performance.now()
+      function tick(now: number) {
+        const t = Math.min(1, (now - start) / duration)
+        setDisplay(scrambleFrame(text, Math.floor(t * text.length)))
+        if (t < 1) frame = requestAnimationFrame(tick)
+        else setDisplay(text)
+      }
+      frame = requestAnimationFrame(tick)
     }
 
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
-  }, [text, scrambleMs])
+    if (startDelayMs > 0) {
+      setDisplay(scrambleFrame(text, 0))
+      startTimer = setTimeout(begin, startDelayMs)
+    } else {
+      begin()
+    }
+
+    return () => {
+      cancelAnimationFrame(frame)
+      if (startTimer) clearTimeout(startTimer)
+    }
+  }, [text, scrambleMs, startDelayMs])
 
   return (
     <Tag className={className} aria-label={text}>

@@ -31,13 +31,18 @@ export default async function HomePage() {
             <DecryptText
               as="h1"
               text="Build your city from code"
+              startDelayMs={250}
               className="polis-glow-text mt-2 font-display text-3xl uppercase tracking-wide sm:text-4xl"
             />
             <p className="mt-4 text-sm text-foreground/70 sm:text-base">
-              Connect your github profile and visualize every repository as a building. The number of commits is the height, the language is the color, and the stars is the lightning of the building. 
+              Connect your github profile and visualize every repository as a building. The number of commits is the height, the language is the color, and the stars is the lightning of the building.
               Join the planet and see how your city connects with others in a generative night-city skyline.
             </p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            {/* Boots in after the headline above finishes decrypting (see
+                .polis-boot-stagger in globals.css), a deliberate three-beat
+                sequence — panel, then headline, then the actions — rather
+                than everything materializing on the same frame. */}
+            <div className="polis-boot-stagger mt-6 flex flex-wrap items-center justify-center gap-3">
               <ConnectButton />
               <Link href={`/u/${OWNER_USERNAME}`} className="polis-btn">
                 View {OWNER_USERNAME}&rsquo;s city →
