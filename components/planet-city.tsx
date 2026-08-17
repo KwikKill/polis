@@ -67,11 +67,15 @@ export default function PlanetCity({
   radius,
   suppressSelect,
   onHover,
+  isFocused = false,
 }: {
   city: PlanetCityData
   radius: number
   suppressSelect: boolean
   onHover: (building: Building | null) => void
+  /** Keyboard-focused via Tab (see planet-scene.tsx), independent of mouse
+   * hover — the reticle below responds to either. */
+  isFocused?: boolean
 }) {
   const normal = useMemo(
     () => new THREE.Vector3(city.planetX, city.planetY, city.planetZ).normalize(),
@@ -144,7 +148,7 @@ export default function PlanetCity({
             already relies on for the text above, so the bracket now uses
             that same frame to stay actually centered on the label
             regardless of where the city sits. */}
-        {isHovered && (
+        {(isHovered || isFocused) && (
           <group position={[0, 1.3, 0]}>
             <CityReticle width={Math.max(10, city.username.length * 1.9)} height={5} />
           </group>

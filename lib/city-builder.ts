@@ -37,6 +37,21 @@ export function cityExtent(buildings: Building[]): number {
   return Math.max(...buildings.map((b) => Math.hypot(b.x, b.z) + b.width / 2), 10)
 }
 
+// A flavor stat, not a real metric — "population" for a place that's
+// literally just repositories is inherently make-believe, so this leans
+// into the size the buildings already carry rather than inventing a
+// separate model: total built volume (width * depth * height, already a
+// function of repo size and commit count via buildWidth/buildHeight
+// above) times a density constant picked purely so the result reads like
+// a plausible city population, not to mean anything more precise than
+// that.
+const POPULATION_DENSITY = 90
+
+export function estimatePopulation(buildings: Building[]): number {
+  const totalVolume = buildings.reduce((sum, b) => sum + b.width * b.depth * b.height, 0)
+  return Math.round(totalVolume * POPULATION_DENSITY)
+}
+
 // The sunflower spiral only guarantees *even density*, not that two
 // same-index-neighbours' footprints don't overlap, a wide building next to
 // another wide one can still collide. Relax the layout with a few passes of

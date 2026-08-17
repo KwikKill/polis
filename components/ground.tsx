@@ -31,6 +31,37 @@ const SIDEWALK_HEIGHT = 0.035
 const SIDEWALK_Y = 0.025
 const SIDEWALK_COLOR = '#4a4258'
 
+// A circuit-grid overlay for the standalone city page's reflective floor
+// (see the `reflective` branch below) — that plane used to be entirely
+// featureless, just a flat mirror. Same fwidth-based line technique
+// planet-surface.tsx's own ground grid already uses, applied to the
+// plane's flat local XY instead of lon/lat, layered a hair above the
+// reflection itself rather than baked into MeshReflectorMaterial (which
+// has no texture/pattern input worth fighting for this).
+const CITY_GRID_COLOR = new THREE.Color('#ff2fd6')
+const CITY_GRID_SPACING = 6
+
+const CITY_GRID_VERTEX = `
+  varying vec2 vXy;
+  void main() {
+    vXy = position.xy;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const CITY_GRID_FRAGMENT = `
+  varying vec2 vXy;
+  uniform vec3 gridColor;
+
+  void main() {
+    vec2 c = vXy / ${CITY_GRID_SPACING.toFixed(1)};
+    vec2 d = fwidth(c) + 1e-4;
+    vec2 gridLine = 1.0 - clamp(abs(fract(c - 0.5) - 0.5) / d, 0.0, 1.0);
+    float line = max(gridLine.x, gridLine.y);
+    gl_FragColor = vec4(gridColor, line * 0.35);
+  }
+`
+
 interface Point {
   x: number
   z: number
@@ -292,6 +323,7 @@ export default function Ground({
   curvature?: SurfaceCurvature
 }) {
   const streetlights = useMemo(() => streetlightsAlongRoads(roads), [roads])
+  const cityGridUniforms = useMemo(() => ({ gridColor: { value: CITY_GRID_COLOR } }), [])
 
   const curvedGeometry = useMemo(() => {
     if (!curvature) return null
@@ -306,21 +338,34 @@ export default function Ground({
   return (
     <group>
       {reflective ? (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
-          <planeGeometry args={[500, 500]} />
-          <MeshReflectorMaterial
-            blur={[300, 100]}
-            resolution={1024}
-            mixBlur={1}
-            mixStrength={35}
-            roughness={1}
-            depthScale={1.2}
-            minDepthThreshold={0.4}
-            maxDepthThreshold={1.4}
-            color="#050308"
-            metalness={0.4}
-          />
-        </mesh>
+        <>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]}>
+            <planeGeometry args={[500, 500]} />
+            <MeshReflectorMaterial
+              blur={[300, 100]}
+              resolution={1024}
+              mixBlur={1}
+              mixStrength={35}
+              roughness={1}
+              depthScale={1.2}
+              minDepthThreshold={0.4}
+              maxDepthThreshold={1.4}
+              color="#050308"
+              metalness={0.4}
+            />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.015, 0]}>
+            <planeGeometry args={[500, 500]} />
+            <shaderMaterial
+              vertexShader={CITY_GRID_VERTEX}
+              fragmentShader={CITY_GRID_FRAGMENT}
+              uniforms={cityGridUniforms}
+              transparent
+              depthWrite={false}
+              toneMapped={false}
+            />
+          </mesh>
+        </>
       ) : curvedGeometry ? (
         <mesh geometry={curvedGeometry} position={[0, -0.02, 0]}>
           <meshBasicMaterial color="#0d0a16" toneMapped={false} side={THREE.DoubleSide} />

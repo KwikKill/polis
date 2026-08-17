@@ -111,10 +111,26 @@
   /* A bracketed terminal label, "[ CONNECT ]", rather than a filled pill.
      Reuses panel-in for its own entrance (shorter, slightly delayed so a
      button visibly resolves a beat after its containing panel), and
-     glitches once on hover instead of a filled hover background. */
+     glitches once on hover instead of a filled hover background.
+
+     The entrance and the hover flicker are two *separate* named
+     animations, both always present in the `animation` list (the hover
+     rule only ever swaps the second slot's name, from a no-op to
+     btn-flicker), on purpose: the browser only restarts an animation
+     whose own name actually changed value, so panel-in's name staying
+     identical between the hover and non-hover rules means it keeps
+     playing (or stays finished) rather than restarting. An earlier
+     version had :hover replace the *entire* animation shorthand with
+     btn-flicker alone — harmless while hovered, but the moment the mouse
+     left, the shorthand reverted to panel-in's declaration, which reads
+     as a brand new animation to the browser and replayed its clip-path
+     wipe from a near-invisible 0% state: the button visibly vanished and
+     re-revealed itself on every single mouse-leave. */
   .polis-btn {
     @apply relative border border-line bg-background/40 px-4 py-2 text-xs font-display uppercase tracking-wider text-foreground/90 transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50;
-    animation: panel-in 0.2s ease-out 0.12s both;
+    animation:
+      panel-in 0.2s ease-out 0.12s both,
+      btn-flicker-idle 0.4s steps(1, jump-end);
   }
 
   .polis-btn::before {
@@ -137,7 +153,16 @@
   }
 
   .polis-btn:not(:disabled):hover {
-    animation: btn-flicker 0.4s steps(1, jump-end);
+    animation:
+      panel-in 0.2s ease-out 0.12s both,
+      btn-flicker 0.4s steps(1, jump-end);
+  }
+
+  @keyframes btn-flicker-idle {
+    from,
+    to {
+      opacity: 1;
+    }
   }
 
   @keyframes btn-flicker {

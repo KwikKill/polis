@@ -14,6 +14,11 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
+  // Needed for per-page opengraph-image routes (see app/u/[username]/
+  // opengraph-image.tsx) to resolve to an absolute URL — without this,
+  // Next can only guess the deployment origin, which Next itself warns
+  // about and can get wrong outside of Vercel's own inferred-URL cases.
+  metadataBase: new URL('https://polis.somi.blaisot.org'),
   title: 'Polis - build your city from GitHub profile',
   description:
     'A generative night-city skyline where every building is a GitHub repository: height from commits, color from language, light from stars.',

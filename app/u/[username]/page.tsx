@@ -1,3 +1,4 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import AddToPlanetButton from '@/components/add-to-planet-button'
@@ -8,6 +9,26 @@ import { getCity, getViewerCityStatus } from '@/lib/city-service'
 import { OWNER_USERNAME } from '@/lib/site'
 
 export const dynamic = 'force-dynamic'
+
+// The image itself comes from the sibling opengraph-image.tsx route (Next
+// wires it in automatically); this is just the title/description text
+// that goes alongside it, per-user instead of the root layout's one
+// static site-wide pair.
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ username: string }>
+}): Promise<Metadata> {
+  const { username } = await params
+  const city = await getCity(username)
+  if (!city) {
+    return { title: 'City not found - Polis' }
+  }
+  return {
+    title: `${city.username}’s city - Polis`,
+    description: `${city.buildings.length} repositories generated into a night-city skyline on Polis: height from commits, color from language, light from stars.`,
+  }
+}
 
 export default async function UserCityPage({
   params,

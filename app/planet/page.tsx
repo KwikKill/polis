@@ -27,6 +27,7 @@ export default async function PlanetPage() {
         viewerUsername={session?.user?.username ?? null}
         devMode={isDev}
         devCities={devCities}
+        explorable
       >
         <div className="pointer-events-none fixed inset-x-0 top-0 z-10 flex items-start justify-between p-6">
           <div className="polis-hud-panel pointer-events-auto px-4 py-3">

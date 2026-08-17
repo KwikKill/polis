@@ -4,19 +4,31 @@ import { OrbitControls } from '@react-three/drei'
 import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import Footer from '@/components/footer'
+import PlanetCameraFlight, {
+  focusMaxDistance,
+  FOCUS_MIN_DISTANCE,
+  type OrbitControlsLike,
+} from '@/components/planet-camera-flight'
 import PlanetCity from '@/components/planet-city'
 import PlanetCityPreview from '@/components/planet-city-preview'
 import PlanetClouds from '@/components/planet-clouds'
 import PlanetDataRings from '@/components/planet-data-rings'
+import PlanetDirectory from '@/components/planet-directory'
 import PlanetRoads from '@/components/planet-roads'
 import PlanetSky from '@/components/planet-sky'
 import PlanetSurface from '@/components/planet-surface'
-import { cityExtent } from '@/lib/city-builder'
+import { cityExtent, estimatePopulation } from '@/lib/city-builder'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { devSetCityPosition, relocateCity, type DevCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
+
+// Elements Tab shouldn't be hijacked away from — a real interactive
+// control still needs normal browser Tab behavior, the city-cycling
+// shortcut below only kicks in when focus is nowhere in particular (the
+// scene itself, or the page body).
+const FOCUSABLE_TAGS = new Set(['INPUT', 'SELECT', 'BUTTON', 'A', 'TEXTAREA'])
 
 export default function PlanetScene({
   cities,
@@ -25,6 +37,7 @@ export default function PlanetScene({
   viewerUsername,
   devMode = false,
   devCities,
+  explorable = false,
   children,
 }: {
   cities: PlanetCityData[]
@@ -33,6 +46,12 @@ export default function PlanetScene({
   viewerUsername: string | null
   devMode?: boolean
   devCities?: DevCity[]
+  /** Turns on the city directory panel and keyboard (Tab/Enter) city
+   * navigation — opted in only where the planet is the actual point of
+   * the page (see app/planet/page.tsx), not on the homepage's background
+   * instance, where a surprise Tab-hijack would be an odd thing to hit
+   * while trying to reach the hero panel's own controls. */
+  explorable?: boolean
   children?: React.ReactNode
 }) {
   const router = useRouter()
@@ -41,8 +60,13 @@ export default function PlanetScene({
   const [devTargetUsername, setDevTargetUsername] = useState<string | null>(null)
   const [placementMode, setPlacementMode] = useState(false)
   const [previewCandidate, setPreviewCandidate] = useState<Vec3 | null>(null)
+  const [previewValid, setPreviewValid] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  const [flyToCity, setFlyToCity] = useState<PlanetCityData | null>(null)
+  const [focusedUsername, setFocusedUsername] = useState<string | null>(null)
+  const [returnRequestId, setReturnRequestId] = useState(0)
+  const controlsRef = useRef<OrbitControlsLike | null>(null)
 
   // In dev mode, the "active" city being placed/moved is whichever one the
   // dev picker below has selected, standing in for the normal "only your
@@ -91,27 +115,42 @@ export default function PlanetScene({
   const initialCameraPosition: [number, number, number] = [radius, radius * 2, radius * 2]
 
   function handlePlanetClick(e: ThreeEvent<MouseEvent>) {
-    if (!placementMode || pending) return
-    e.stopPropagation()
+    if (placementMode) {
+      if (pending) return
+      e.stopPropagation()
 
-    const len = Math.hypot(e.point.x, e.point.y, e.point.z)
-    if (len < 1e-6) return
-    const candidate: Vec3 = [e.point.x / len, e.point.y / len, e.point.z / len]
+      const len = Math.hypot(e.point.x, e.point.y, e.point.z)
+      if (len < 1e-6) return
+      const candidate: Vec3 = [e.point.x / len, e.point.y / len, e.point.z / len]
 
-    // Instant client-side feedback using the same pure function and
-    // positions already in props, the server re-validates authoritatively
-    // regardless inside relocateCity's transaction, this check is UX only.
-    if (!isValidPlacement(candidate, activeExtent, otherCities, radius)) {
-      setError('Too close to another city or a natural feature, try a different spot.')
+      // Always shows the ghost now, valid or not (see PlanetCityPreview's
+      // own `valid` prop, which turns it red) — a rejected click used to
+      // just produce a floating text error with nothing at the spot
+      // itself, this puts the actual rejected footprint down so it's
+      // obvious why, not just that. The server re-validates
+      // authoritatively regardless inside relocateCity's transaction
+      // either way, this check is UX only.
+      setPreviewValid(isValidPlacement(candidate, activeExtent, otherCities, radius))
+      setError(null)
+      setPreviewCandidate(candidate)
       return
     }
 
-    setError(null)
-    setPreviewCandidate(candidate)
+    // Not placing anything — a click on the bare planet surface while a
+    // city is focused means "done looking at that one," the same request
+    // PlanetCameraFlight's own zoom-out watcher makes, just triggered
+    // immediately instead of by distance. Bumping the id (rather than
+    // clearing focusedUsername/flyToCity directly here) is what lets the
+    // flight actually *fly* back rather than snapping, and keeps the
+    // state clear happening once true via onReturnedToOverview either way.
+    if (focusedUsername) {
+      e.stopPropagation()
+      setReturnRequestId((n) => n + 1)
+    }
   }
 
   function confirmMove() {
-    if (!previewCandidate || pending || !activeUsername) return
+    if (!previewCandidate || !previewValid || pending || !activeUsername) return
     startTransition(async () => {
       const result =
         devMode && devTargetUsername
@@ -131,8 +170,62 @@ export default function PlanetScene({
   function cancelMove() {
     setPlacementMode(false)
     setPreviewCandidate(null)
+    setPreviewValid(true)
     setError(null)
   }
+
+  function visitCity(city: PlanetCityData) {
+    setFocusedUsername(city.username)
+    setFlyToCity(city)
+  }
+
+  // The camera flight's own "zoomed out past the focus range" watcher
+  // calls this — clears the selection and, via the OrbitControls
+  // min/maxDistance props below reverting to their planet-wide values,
+  // lets a further zoom-out behave normally again instead of continuing
+  // to orbit a point on the surface at the wrong scale.
+  function exitCityFocus() {
+    setFocusedUsername(null)
+    setFlyToCity(null)
+  }
+
+  // Tab cycles the keyboard focus between cities (wrapping), flying the
+  // camera to whichever one is focused and marking it with the same
+  // reticle a mouse hover already shows; Enter opens that city's own page.
+  // Guarded to only engage when focus isn't already inside a real control
+  // (see FOCUSABLE_TAGS) — this is additive navigation for the 3D scene,
+  // not a replacement for normal Tab order through the HUD's own buttons,
+  // links and the dev picker's inputs.
+  useEffect(() => {
+    if (!explorable || cities.length === 0) return
+
+    // Same order the directory panel itself shows (biggest estimated
+    // population first) — Tab stepping through a different order than
+    // what's visibly listed would feel disconnected from it.
+    const sorted = [...cities].sort(
+      (a, b) => estimatePopulation(b.buildings) - estimatePopulation(a.buildings),
+    )
+
+    function handleKeyDown(e: KeyboardEvent) {
+      const tag = (document.activeElement as HTMLElement | null)?.tagName
+      if (tag && FOCUSABLE_TAGS.has(tag)) return
+
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        const currentIndex = sorted.findIndex(
+          (c) => c.username.toLowerCase() === focusedUsername?.toLowerCase(),
+        )
+        const delta = e.shiftKey ? -1 : 1
+        const nextIndex = currentIndex < 0 ? 0 : (currentIndex + delta + sorted.length) % sorted.length
+        visitCity(sorted[nextIndex])
+      } else if (e.key === 'Enter' && focusedUsername) {
+        router.push(`/u/${focusedUsername}`)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [explorable, cities, focusedUsername, router])
 
   return (
     <div
@@ -175,6 +268,7 @@ export default function PlanetScene({
             radius={radius}
             suppressSelect={placementMode}
             onHover={setHovered}
+            isFocused={explorable && city.username.toLowerCase() === focusedUsername?.toLowerCase()}
           />
         ))}
 
@@ -183,16 +277,37 @@ export default function PlanetScene({
             buildings={activeCity.buildings}
             candidate={previewCandidate}
             radius={radius}
+            valid={previewValid}
           />
         )}
 
         <OrbitControls
+          // drei's OrbitControls ref type pulls in three-stdlib's full
+          // class surface; PlanetCameraFlight only needs the couple of
+          // members OrbitControlsLike declares, so the ref itself stays
+          // typed to that minimal shape and gets cast here instead of
+          // widening it everywhere else it's used.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ref={controlsRef as any}
           enablePan={false}
-          minDistance={radius * 1.05}
-          maxDistance={radius * 3}
+          // A city being focused needs a much tighter range than the
+          // planet-wide default (see planet-camera-flight.tsx) — without
+          // this, the planet-wide minDistance is far larger than the
+          // close-up arrival distance, and OrbitControls' own clamping
+          // would fight the flight back out to planet scale the instant
+          // it next updates.
+          minDistance={focusedUsername ? FOCUS_MIN_DISTANCE : radius * 1.05}
+          maxDistance={focusedUsername ? focusMaxDistance(radius) : radius * 3}
           rotateSpeed={0.5}
           zoomSpeed={0.5}
           makeDefault
+        />
+        <PlanetCameraFlight
+          target={flyToCity}
+          radius={radius}
+          controlsRef={controlsRef}
+          onReturnedToOverview={exitCityFocus}
+          returnRequestId={returnRequestId}
         />
 
         <EffectComposer>
@@ -249,17 +364,25 @@ export default function PlanetScene({
             activeCity &&
             (previewCandidate ? (
               <div className="pointer-events-auto flex items-center gap-3">
-                <p className="polis-hud-panel px-3 py-2 text-xs text-foreground/70">
-                  {activeIsOnPlanet ? 'Move' : 'Place'} {activeUsername}&rsquo;s city here?
-                </p>
-                <button
-                  type="button"
-                  className="polis-btn"
-                  disabled={pending}
-                  onClick={confirmMove}
-                >
-                  {pending ? 'Saving…' : 'Confirm'}
-                </button>
+                {previewValid ? (
+                  <>
+                    <p className="polis-hud-panel px-3 py-2 text-xs text-foreground/70">
+                      {activeIsOnPlanet ? 'Move' : 'Place'} {activeUsername}&rsquo;s city here?
+                    </p>
+                    <button
+                      type="button"
+                      className="polis-btn"
+                      disabled={pending}
+                      onClick={confirmMove}
+                    >
+                      {pending ? 'Saving…' : 'Confirm'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="polis-hud-panel px-3 py-2 text-xs text-accent">
+                    Too close to another city or a natural feature — try a different spot.
+                  </p>
+                )}
                 <button type="button" className="polis-btn" disabled={pending} onClick={cancelMove}>
                   Cancel
                 </button>
@@ -286,6 +409,10 @@ export default function PlanetScene({
             </button>
           )}
         </div>
+      )}
+
+      {explorable && (
+        <PlanetDirectory cities={cities} focusedUsername={focusedUsername} onSelect={visitCity} />
       )}
 
       <Footer />
