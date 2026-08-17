@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import AddToPlanetButton from '@/components/add-to-planet-button'
 import CityScene from '@/components/city-scene'
+import DecryptText from '@/components/decrypt-text'
 import { auth } from '@/lib/auth'
 import { getCity, getViewerCityStatus } from '@/lib/city-service'
 import { OWNER_USERNAME } from '@/lib/site'
@@ -35,7 +36,11 @@ export default async function UserCityPage({
             <p className="font-display text-xs uppercase tracking-widest text-foreground/60">
               Polis
             </p>
-            <p className="polis-glow-text font-display text-lg">{city.username}&rsquo;s city</p>
+            <DecryptText
+              as="p"
+              text={`${city.username}’s city`}
+              className="polis-glow-text font-display text-lg"
+            />
             <a
               href={`https://github.com/${city.username}`}
               target="_blank"

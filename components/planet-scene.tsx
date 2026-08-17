@@ -203,7 +203,7 @@ export default function PlanetScene({
           style={{ left: pointer.x + 16, top: pointer.y + 16 }}
         >
           <p className="polis-glow-text font-display text-sm">{hovered.repoName}</p>
-          <p className="text-foreground/70">
+          <p className="text-data">
             {hovered.language ?? 'Unknown'} · {hovered.stars}★ · {hovered.commits} commits
             {hovered.fork && ' · fork'}
             {hovered.stale && ' · dormant'}
@@ -225,7 +225,7 @@ export default function PlanetScene({
               <select
                 value={devTargetUsername ?? ''}
                 onChange={(e) => setDevTargetUsername(e.target.value || null)}
-                className="rounded border border-primary/30 bg-background/80 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+                className="border border-line bg-background/80 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
               >
                 <option value="">Select a city…</option>
                 {devCities.map((c) => (

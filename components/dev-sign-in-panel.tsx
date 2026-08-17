@@ -27,7 +27,7 @@ export default async function DevSignInPanel() {
           name="username"
           placeholder="github username"
           required
-          className="min-w-0 flex-1 rounded border border-primary/30 bg-background/80 px-2 py-1 text-sm text-foreground placeholder:text-foreground/40 focus:border-primary focus:outline-none"
+          className="min-w-0 flex-1 border border-line bg-background/80 px-2 py-1 text-sm text-foreground placeholder:text-foreground/40 focus:border-primary focus:outline-none"
         />
         <button type="submit" className="polis-btn">
           Sign in
@@ -44,7 +44,7 @@ export default async function DevSignInPanel() {
         >
           <select
             name="username"
-            className="min-w-0 flex-1 rounded border border-primary/30 bg-background/80 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
+            className="min-w-0 flex-1 border border-line bg-background/80 px-2 py-1 text-sm text-foreground focus:border-primary focus:outline-none"
           >
             {usernames.map((u) => (
               <option key={u} value={u}>

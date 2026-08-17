@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import DecryptText from '@/components/decrypt-text'
 import PlanetScene from '@/components/planet-scene'
 import { auth } from '@/lib/auth'
 import { planetRadius } from '@/lib/planet-builder'
@@ -32,10 +33,12 @@ export default async function PlanetPage() {
             <p className="font-display text-xs uppercase tracking-widest text-foreground/60">
               Polis
             </p>
-            <p className="polis-glow-text font-display text-lg">The planet</p>
-            <p className="text-xs text-foreground/60">
-              {cities.length} {cities.length === 1 ? 'city' : 'cities'}
-            </p>
+            <DecryptText as="p" text="The planet" className="polis-glow-text font-display text-lg" />
+            <DecryptText
+              as="p"
+              text={`${cities.length} ${cities.length === 1 ? 'city' : 'cities'}`}
+              className="text-xs text-data"
+            />
           </div>
           <Link href="/" className="polis-btn pointer-events-auto">
             Menu

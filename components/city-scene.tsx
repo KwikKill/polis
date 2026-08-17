@@ -62,7 +62,7 @@ export default function CityScene({
           style={{ left: pointer.x + 16, top: pointer.y + 16 }}
         >
           <p className="polis-glow-text font-display text-sm">{hovered.repoName}</p>
-          <p className="text-foreground/70">
+          <p className="text-data">
             {hovered.language ?? 'Unknown'} · {hovered.stars}★ · {hovered.commits} commits
             {hovered.fork && ' · fork'}
             {hovered.stale && ' · dormant'}

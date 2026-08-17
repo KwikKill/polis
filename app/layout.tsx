@@ -1,13 +1,16 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Geist, Orbitron } from 'next/font/google'
+import { Geist, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 
 const geist = Geist({ subsets: ['latin'], variable: '--font-geist' })
-const orbitron = Orbitron({
+// Section 9 Terminal: headlines, labels and buttons read as a technical
+// readout rather than a display wordmark, so the "display" role is a
+// monospace face instead of Orbitron.
+const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
-  weight: ['500', '700', '900'],
-  variable: '--font-orbitron',
+  weight: ['400', '500', '700'],
+  variable: '--font-jetbrains-mono',
 })
 
 export const metadata: Metadata = {
@@ -18,7 +21,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   colorScheme: 'dark',
-  themeColor: '#0a0714',
+  themeColor: '#0a0910',
   width: 'device-width',
   initialScale: 1,
 }
@@ -29,7 +32,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={`${geist.variable} ${orbitron.variable}`}>
+    <html lang="en" className={`${geist.variable} ${jetbrainsMono.variable}`}>
       <body className="bg-background font-sans antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}

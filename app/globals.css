@@ -6,18 +6,26 @@
   --color-primary: var(--primary);
   --color-secondary: var(--secondary);
   --color-accent: var(--accent);
+  --color-line: var(--line);
+  --color-data: var(--data);
   --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-orbitron), var(--font-geist), sans-serif;
+  --font-display: var(--font-jetbrains-mono), var(--font-geist), ui-monospace, monospace;
 }
 
 :root {
   color-scheme: dark;
-  /* theme-ghost, extended from hyperion: magenta/violet night-city palette */
-  --background: #0a0714;
-  --foreground: #f5f3ff;
-  --primary: #ff00ff;
+  /* theme-ghost, Section 9 Terminal variant: a near-black, desaturated base
+     rather than a saturated purple field, magenta kept as the one sparing
+     brand accent (panel corner brackets, hover states, the hero glow), and
+     a separate cyan reserved for live/system readouts (counts, stats) so
+     "brand" and "data" never compete for the same color. */
+  --background: #0a0910;
+  --foreground: #eee9f7;
+  --primary: #ff2fd6;
   --secondary: #8a2be2;
   --accent: #ff69b4;
+  --line: #3a3550;
+  --data: #4de8ff;
 }
 
 @layer base {
@@ -27,17 +35,137 @@
 }
 
 @layer components {
+  /* Sharp-cornered panel with a hairline border and four corner brackets
+     (drawn as background gradients on a pseudo-element, not extra markup,
+     so every existing consumer gets them for free) instead of the old
+     rounded box + soft glow ring. Every panel wipes in top-to-bottom on
+     mount (panel-in) with a bright scan-line racing down exactly at the
+     reveal edge (::after) — since these are ordinary conditionally-
+     rendered DOM nodes (hover tooltips, placement-mode panels, dev
+     panels), this plays automatically every time one appears, no JS
+     needed, which covers every "menu opening" in the app for free.
+     Corner brackets aren't animated separately, the wipe reveals them
+     progressively as it passes, like a viewfinder unlocking. */
   .polis-hud-panel {
-    @apply rounded border border-primary/30 bg-background/60 backdrop-blur-sm;
-    box-shadow: 0 0 20px color-mix(in oklab, var(--primary) 25%, transparent);
+    @apply relative border border-line bg-background/70 backdrop-blur-sm;
+    animation: panel-in 0.25s ease-out both;
   }
 
+  .polis-hud-panel::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    pointer-events: none;
+    opacity: 0.85;
+    background:
+      linear-gradient(var(--primary), var(--primary)) top left / 9px 1px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) top left / 1px 9px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) top right / 9px 1px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) top right / 1px 9px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) bottom left / 9px 1px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) bottom left / 1px 9px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) bottom right / 9px 1px no-repeat,
+      linear-gradient(var(--primary), var(--primary)) bottom right / 1px 9px no-repeat;
+  }
+
+  .polis-hud-panel::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    top: 0;
+    background: linear-gradient(90deg, transparent, var(--primary), transparent);
+    box-shadow: 0 0 8px color-mix(in oklab, var(--primary) 70%, transparent);
+    pointer-events: none;
+    animation: scan-line 0.25s linear both;
+  }
+
+  @keyframes panel-in {
+    from {
+      clip-path: inset(0 0 100% 0);
+      opacity: 0.6;
+    }
+    to {
+      clip-path: inset(0 0 0% 0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes scan-line {
+    from {
+      top: 0%;
+      opacity: 1;
+    }
+    to {
+      top: 100%;
+      opacity: 0;
+    }
+  }
+
+  /* A restrained technical flicker instead of a blanket neon bloom. */
   .polis-glow-text {
-    text-shadow: 0 0 6px color-mix(in oklab, var(--primary) 60%, transparent),
-      0 0 16px color-mix(in oklab, var(--primary) 30%, transparent);
+    text-shadow: 0 0 3px color-mix(in oklab, var(--primary) 40%, transparent);
   }
 
+  /* A bracketed terminal label, "[ CONNECT ]", rather than a filled pill.
+     Reuses panel-in for its own entrance (shorter, slightly delayed so a
+     button visibly resolves a beat after its containing panel), and
+     glitches once on hover instead of a filled hover background. */
   .polis-btn {
-    @apply rounded border border-primary/50 px-4 py-2 text-sm font-display uppercase tracking-wide text-foreground transition-colors hover:bg-primary/10 hover:border-primary;
+    @apply relative border border-line bg-background/40 px-4 py-2 text-xs font-display uppercase tracking-wider text-foreground/90 transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50;
+    animation: panel-in 0.2s ease-out 0.12s both;
+  }
+
+  .polis-btn::before {
+    content: '[';
+    margin-right: 0.45em;
+    color: var(--line);
+    transition: color 0.15s ease;
+  }
+
+  .polis-btn::after {
+    content: ']';
+    margin-left: 0.45em;
+    color: var(--line);
+    transition: color 0.15s ease;
+  }
+
+  .polis-btn:hover::before,
+  .polis-btn:hover::after {
+    color: var(--primary);
+  }
+
+  .polis-btn:not(:disabled):hover {
+    animation: btn-flicker 0.4s steps(1, jump-end);
+  }
+
+  @keyframes btn-flicker {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    15% {
+      opacity: 0.35;
+    }
+    30% {
+      opacity: 1;
+    }
+    45% {
+      opacity: 0.5;
+    }
+    60% {
+      opacity: 1;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polis-hud-panel,
+  .polis-hud-panel::before,
+  .polis-hud-panel::after,
+  .polis-btn,
+  .polis-btn:not(:disabled):hover {
+    animation: none !important;
   }
 }

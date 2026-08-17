@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import PlanetScene from '@/components/planet-scene'
 import ConnectButton from '@/components/connect-button'
+import DecryptText from '@/components/decrypt-text'
 import DevSignInPanel from '@/components/dev-sign-in-panel'
 import { auth } from '@/lib/auth'
 import { planetRadius } from '@/lib/planet-builder'
@@ -27,9 +28,11 @@ export default async function HomePage() {
             <p className="font-display text-xs uppercase tracking-widest text-foreground/50">
               Polis
             </p>
-            <h1 className="polis-glow-text mt-2 font-display text-3xl uppercase tracking-wide sm:text-4xl">
-              Build your city from code
-            </h1>
+            <DecryptText
+              as="h1"
+              text="Build your city from code"
+              className="polis-glow-text mt-2 font-display text-3xl uppercase tracking-wide sm:text-4xl"
+            />
             <p className="mt-4 text-sm text-foreground/70 sm:text-base">
               Connect your github profile and visualize every repository as a building. The number of commits is the height, the language is the color, and the stars is the lightning of the building. 
               Join the planet and see how your city connects with others in a generative night-city skyline.
