@@ -237,28 +237,6 @@ function buildTiers(buildings: Building[]): Tier[] {
   return tiers
 }
 
-function LandmarkBeacon({ building: b, curvature }: { building: Building; curvature?: SurfaceCurvature }) {
-  const { position, quaternion } = useMemo(() => {
-    if (!curvature) return { position: new THREE.Vector3(b.x, b.height + 6, b.z), quaternion: undefined }
-    const { position: p, tiltQuaternion } = curvedLocalPlacement(
-      b.x,
-      b.height + 6,
-      b.z,
-      curvature.normal,
-      curvature.planetRadius,
-      curvature.quaternion,
-    )
-    return { position: p, quaternion: tiltQuaternion }
-  }, [b.x, b.z, b.height, curvature])
-
-  return (
-    <mesh position={position} quaternion={quaternion}>
-      <cylinderGeometry args={[0.04, 0.04, 12, 6]} />
-      <meshBasicMaterial color={b.color} toneMapped={false} transparent opacity={0.55} />
-    </mesh>
-  )
-}
-
 export default function BuildingField({ buildings, onHover, onSelect, curvature }: BuildingFieldProps) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
   const forkMesh = useRef<THREE.InstancedMesh>(null!)
@@ -266,6 +244,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
   const windowMesh = useRef<THREE.InstancedMesh>(null!)
   const roofPropMesh = useRef<THREE.InstancedMesh>(null!)
   const tierMesh = useRef<THREE.InstancedMesh>(null!)
+  const landmarkMesh = useRef<THREE.InstancedMesh>(null!)
 
   const bodyGeometry = useMemo(() => shadedBoxGeometry(), [])
   const landmarks = useMemo(() => buildings.filter((b) => b.landmark), [buildings])
@@ -381,6 +360,24 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
     if (tierMesh.current.instanceColor) tierMesh.current.instanceColor.needsUpdate = true
   }, [tiers, curvature])
 
+  // Rooftop beacons on the top-starred repos — a thin glowing spire per
+  // landmark, cheap and low-count on its own, but a non-instanced `<mesh>`
+  // per landmark (what this used to be) is still its own draw call, and
+  // this scene can have many landmark-bearing cities rendered at once (see
+  // planet-scene.tsx). Instanced like every other prop here instead.
+  useLayoutEffect(() => {
+    if (!landmarkMesh.current || landmarks.length === 0) return
+    const dummy = new THREE.Object3D()
+    landmarks.forEach((b, i) => {
+      placeDummy(dummy, b.x, b.height + 6, b.z, 0, curvature)
+      dummy.updateMatrix()
+      landmarkMesh.current.setMatrixAt(i, dummy.matrix)
+      landmarkMesh.current.setColorAt(i, new THREE.Color(b.color))
+    })
+    landmarkMesh.current.instanceMatrix.needsUpdate = true
+    if (landmarkMesh.current.instanceColor) landmarkMesh.current.instanceColor.needsUpdate = true
+  }, [landmarks, curvature])
+
   return (
     <>
       <instancedMesh
@@ -466,10 +463,12 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
         </instancedMesh>
       )}
 
-      {/* Rooftop beacons on the top-starred repos, cheap, low count, not instanced. */}
-      {landmarks.map((b) => (
-        <LandmarkBeacon key={b.repoName} building={b} curvature={curvature} />
-      ))}
+      {landmarks.length > 0 && (
+        <instancedMesh ref={landmarkMesh} args={[undefined, undefined, landmarks.length]}>
+          <cylinderGeometry args={[0.04, 0.04, 12, 6]} />
+          <meshBasicMaterial toneMapped={false} transparent opacity={0.55} />
+        </instancedMesh>
+      )}
     </>
   )
 }

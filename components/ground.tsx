@@ -85,31 +85,53 @@ function hashPhase(x: number, z: number): number {
   return s - Math.floor(s)
 }
 
-function Streetlight({ x, z, curvature }: Point & { curvature?: SurfaceCurvature }) {
-  const { position, quaternion } = useMemo(() => {
-    if (!curvature) return { position: new THREE.Vector3(x, 0, z), quaternion: undefined }
-    const { position: p, tiltQuaternion } = curvedLocalPlacement(
-      x,
-      0,
-      z,
-      curvature.normal,
-      curvature.planetRadius,
-      curvature.quaternion,
-    )
-    return { position: p, quaternion: tiltQuaternion }
-  }, [x, z, curvature])
+const STREETLIGHT_POLE_COLOR = '#1a1024'
+const STREETLIGHT_LAMP_COLOR = '#ff00ff'
+const STREETLIGHT_POLE_Y = 1.1
+const STREETLIGHT_LAMP_Y = 2.28
+
+// One instanced field for every streetlight's pole and one for every lamp,
+// not a `<group>` + two `<mesh>` per streetlight (what this used to be) —
+// a busy planet view can have dozens of these per city across many cities
+// at once, and a non-instanced mesh is its own draw call regardless of how
+// simple its geometry is; two draw calls total here instead of up to
+// 2 * MAX_STREETLIGHTS per city. Uses the same `placeDummy` every other
+// instanced prop in this file already does, with the streetlight's own
+// local y-offset threaded through exactly like a building's window/roof
+// prop height.
+function StreetlightField({ points, curvature }: { points: Point[]; curvature?: SurfaceCurvature }) {
+  const poleMesh = useRef<THREE.InstancedMesh>(null!)
+  const lampMesh = useRef<THREE.InstancedMesh>(null!)
+
+  useLayoutEffect(() => {
+    if (!poleMesh.current || !lampMesh.current || points.length === 0) return
+    const dummy = new THREE.Object3D()
+    points.forEach((p, i) => {
+      placeDummy(dummy, p.x, STREETLIGHT_POLE_Y, p.z, 0, curvature)
+      dummy.updateMatrix()
+      poleMesh.current.setMatrixAt(i, dummy.matrix)
+
+      placeDummy(dummy, p.x, STREETLIGHT_LAMP_Y, p.z, 0, curvature)
+      dummy.updateMatrix()
+      lampMesh.current.setMatrixAt(i, dummy.matrix)
+    })
+    poleMesh.current.instanceMatrix.needsUpdate = true
+    lampMesh.current.instanceMatrix.needsUpdate = true
+  }, [points, curvature])
+
+  if (points.length === 0) return null
 
   return (
-    <group position={position} quaternion={quaternion}>
-      <mesh position={[0, 1.1, 0]}>
+    <>
+      <instancedMesh ref={poleMesh} args={[undefined, undefined, points.length]}>
         <cylinderGeometry args={[0.04, 0.05, 2.2, 6]} />
-        <meshBasicMaterial color="#1a1024" toneMapped={false} />
-      </mesh>
-      <mesh position={[0, 2.28, 0]}>
+        <meshBasicMaterial color={STREETLIGHT_POLE_COLOR} toneMapped={false} />
+      </instancedMesh>
+      <instancedMesh ref={lampMesh} args={[undefined, undefined, points.length]}>
         <sphereGeometry args={[0.09, 8, 8]} />
-        <meshBasicMaterial color="#ff00ff" toneMapped={false} />
-      </mesh>
-    </group>
+        <meshBasicMaterial color={STREETLIGHT_LAMP_COLOR} toneMapped={false} />
+      </instancedMesh>
+    </>
   )
 }
 
@@ -408,10 +430,7 @@ export default function Ground({
 
       <SidewalkField roads={roads} curvature={curvature} />
       <RoadField roads={roads} curvature={curvature} />
-
-      {streetlights.map((l, i) => (
-        <Streetlight key={i} x={l.x} z={l.z} curvature={curvature} />
-      ))}
+      <StreetlightField points={streetlights} curvature={curvature} />
     </group>
   )
 }

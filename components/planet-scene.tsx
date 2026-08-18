@@ -56,7 +56,15 @@ export default function PlanetScene({
 }) {
   const router = useRouter()
   const [hovered, setHovered] = useState<Building | null>(null)
-  const [pointer, setPointer] = useState({ x: 0, y: 0 })
+  // Deliberately *not* React state: this scene renders every city on the
+  // planet at full detail (see PlanetCity's own docs), and `pointer` used
+  // to be state set from every raw pointermove event, which re-renders
+  // this entire component (and, since it's the parent, reconciles every
+  // one of those cities' JSX) on every single pixel of mouse movement —
+  // including while just orbiting the camera. Mutating the tooltip's DOM
+  // node directly below skips React entirely for this, the standard fix
+  // for a cursor-following element.
+  const tooltipRef = useRef<HTMLDivElement>(null)
   const [devTargetUsername, setDevTargetUsername] = useState<string | null>(null)
   const [placementMode, setPlacementMode] = useState(false)
   const [previewCandidate, setPreviewCandidate] = useState<Vec3 | null>(null)
@@ -230,7 +238,11 @@ export default function PlanetScene({
   return (
     <div
       className="relative h-full w-full"
-      onPointerMove={(e) => setPointer({ x: e.clientX, y: e.clientY })}
+      onPointerMove={(e) => {
+        if (tooltipRef.current) {
+          tooltipRef.current.style.transform = `translate(${e.clientX + 16}px, ${e.clientY + 16}px)`
+        }
+      }}
     >
       <Canvas
         dpr={[1, 1.5]}
@@ -315,19 +327,26 @@ export default function PlanetScene({
         </EffectComposer>
       </Canvas>
 
-      {hovered && (
-        <div
-          className="polis-hud-panel pointer-events-none fixed z-10 max-w-xs px-3 py-2 text-xs"
-          style={{ left: pointer.x + 16, top: pointer.y + 16 }}
-        >
-          <p className="polis-glow-text font-display text-sm">{hovered.repoName}</p>
-          <p className="text-data">
-            {hovered.language ?? 'Unknown'} · {hovered.stars}★ · {hovered.commits} commits
-            {hovered.fork && ' · fork'}
-            {hovered.stale && ' · dormant'}
-          </p>
-        </div>
-      )}
+      {/* Always mounted (visibility toggled via `display`, not conditional
+          rendering) so tooltipRef stays live across hover changes — its
+          position is updated directly in the pointermove handler above,
+          never through React state/re-render. */}
+      <div
+        ref={tooltipRef}
+        className="polis-hud-panel pointer-events-none fixed z-10 max-w-xs px-3 py-2 text-xs"
+        style={{ left: 0, top: 0, display: hovered ? 'block' : 'none' }}
+      >
+        {hovered && (
+          <>
+            <p className="polis-glow-text font-display text-sm">{hovered.repoName}</p>
+            <p className="text-data">
+              {hovered.language ?? 'Unknown'} · {hovered.stars}★ · {hovered.commits} commits
+              {hovered.fork && ' · fork'}
+              {hovered.stale && ' · dormant'}
+            </p>
+          </>
+        )}
+      </div>
 
       {(activeCity || (devMode && devCities)) && (
         <div className="pointer-events-none fixed inset-x-0 bottom-16 z-10 flex flex-col items-center gap-2">
