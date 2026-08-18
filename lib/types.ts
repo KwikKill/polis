@@ -75,4 +75,12 @@ export interface PlanetRoad {
   x2: number
   y2: number
   z2: number
+  // World-unit distance from the *whole connection's* own start to this
+  // segment's own start (not reset per segment) — lets the rendered
+  // traveling light (see planet-roads.tsx) read as one continuous pulse
+  // moving down the whole connection at a fixed real-world wavelength,
+  // rather than each short sub-segment looping its own light
+  // independently and reading as a much faster flicker the more finely a
+  // connection happens to be subdivided.
+  offset: number
 }

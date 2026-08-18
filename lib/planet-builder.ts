@@ -55,6 +55,10 @@ const CITY_ROAD_CLEARANCE_MARGIN = 4 // beyond a city's own extent, so a road do
 // How densely a candidate road is sampled to check whether it dips below
 // sea level anywhere along its length (see crossesOcean below).
 const OCEAN_CROSSING_SAMPLES = 32
+// World-unit range for each connection's own hashed starting offset (see
+// buildPlanetRoads), purely for visual variety between connections, not
+// tied to the glint shader's own wavelength constant.
+const ROAD_OFFSET_JITTER_RANGE = 60
 
 export function planetRadius(cityCount: number): number {
   return PLANET_BASE_RADIUS + PLANET_GROWTH * Math.sqrt(cityCount)
@@ -104,6 +108,16 @@ export function randomUnitVector(): Vec3 {
   } while (w >= 1)
   const factor = 2 * Math.sqrt(1 - w)
   return [x1 * factor, x2 * factor, 1 - 2 * w]
+}
+
+// Deterministic pseudo-random value in [0, 1) from two unit vectors, used
+// to seed each road connection's own offset jitter (see buildPlanetRoads)
+// without needing a shared RNG or per-connection identifier — same small
+// sine-hash trick already used client-side for other per-instance jitter
+// (see hashPhase in ground.tsx / planet-roads.tsx).
+function hashUnitInterval(a: Vec3, b: Vec3): number {
+  const s = Math.sin(a[0] * 12.9898 + a[1] * 78.233 + a[2] * 37.719 + b[0] * 93.989 + b[1] * 21.233) * 43758.5453
+  return s - Math.floor(s)
 }
 
 // Squared chord distance between two unit vectors: |a-b|^2 = 2 - 2(a.b).
@@ -275,7 +289,13 @@ function pathMinWorldDist(a: Vec3, b: Vec3, point: Vec3, radius: number, samples
 function crossesOcean(a: Vec3, b: Vec3, samples = OCEAN_CROSSING_SAMPLES): boolean {
   for (let s = 0; s <= samples; s++) {
     const p = slerpUnit(a, b, s / samples)
-    if (terrainHeight01(p[0], p[1], p[2]) < SEA_LEVEL_HEIGHT01) return true
+    // Same COAST_CLEARANCE_HEIGHT01 margin isValidPlacement uses, not the
+    // bare sea level: the rendered surface samples a bilinearly-filtered
+    // heightmap texture (see planet-surface.tsx), not this exact function,
+    // so right at the coastline the two can disagree by a texel's worth of
+    // height — without this margin a road hugging a shoreline could pass
+    // this check yet still visibly dip into water on screen.
+    if (terrainHeight01(p[0], p[1], p[2]) < SEA_LEVEL_HEIGHT01 + COAST_CLEARANCE_HEIGHT01) return true
   }
   return false
 }
@@ -350,6 +370,15 @@ export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): 
       if (blockedByOtherCity) continue
       if (crossesOcean(edgeI, edgeJ)) continue
 
+      // Seeds this whole connection's cumulative offset at a hashed
+      // pseudo-random value instead of always 0, so the traveling glint
+      // (see planet-roads.tsx) doesn't pulse in lockstep at every
+      // connection's own start point — the seed itself then keeps
+      // accumulating by each segment's own true world length below, so
+      // every segment of one connection shares a single continuous
+      // distance-along-the-path rather than each looping independently.
+      let cumulativeOffset = hashUnitInterval(edgeI, edgeJ) * ROAD_OFFSET_JITTER_RANGE
+
       for (let s = 0; s < ROAD_SEGMENTS; s++) {
         const p0 = slerpUnit(edgeI, edgeJ, s / ROAD_SEGMENTS)
         const p1 = slerpUnit(edgeI, edgeJ, (s + 1) / ROAD_SEGMENTS)
@@ -361,14 +390,14 @@ export function buildPlanetRoads(cities: PlanetCityRoadInfo[], radius: number): 
         // terrain curves between this sample and the next.
         const r0 = terrainRadius(p0[0], p0[1], p0[2], radius) + ROAD_SURFACE_LIFT
         const r1 = terrainRadius(p1[0], p1[1], p1[2], radius) + ROAD_SURFACE_LIFT
-        roads.push({
-          x1: p0[0] * r0,
-          y1: p0[1] * r0,
-          z1: p0[2] * r0,
-          x2: p1[0] * r1,
-          y2: p1[1] * r1,
-          z2: p1[2] * r1,
-        })
+        const x1 = p0[0] * r0
+        const y1 = p0[1] * r0
+        const z1 = p0[2] * r0
+        const x2 = p1[0] * r1
+        const y2 = p1[1] * r1
+        const z2 = p1[2] * r1
+        roads.push({ x1, y1, z1, x2, y2, z2, offset: cumulativeOffset })
+        cumulativeOffset += Math.hypot(x2 - x1, y2 - y1, z2 - z1)
       }
     }
   }

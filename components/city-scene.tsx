@@ -27,7 +27,32 @@ export default function CityScene({
     >
       <Canvas
         dpr={[1, 1.5]}
-        camera={{ position: [42, 34, 42], fov: 45, near: 0.1, far: 320 }}
+        // near=1 rather than the more permissive 0.1: OrbitControls' own
+        // minDistance below (12) means the camera is never legitimately
+        // closer than that to anything, so a smaller near plane bought
+        // nothing but a worse near:far ratio — depth-buffer precision
+        // degrades non-linearly with that ratio, and it was coarse enough
+        // that the city ground's grid overlay (see ground.tsx's
+        // CITY_GRID_* mesh, sitting only slightly above the reflective
+        // floor) lost its z-fight against the floor and visibly vanished
+        // once the camera moved far enough out.
+        //
+        // far=600, not the original 320: that was a *hard clip*, not a
+        // precision issue — the ground plane is a flat 500x500 square
+        // (250-unit half-extent from origin), OrbitControls lets the
+        // camera get up to 150 units from its target and pitch to
+        // maxPolarAngle (near-horizontal, grazing the ground), and at that
+        // combination the camera-to-far-corner distance can reach roughly
+        // 150 (camera-to-target, worst case near-horizontal) + ~4
+        // (target's own y-offset) + 250*sqrt(2) (origin-to-corner) ≈ 508
+        // units — comfortably past the old far=320, which is exactly why
+        // parts of the ground plane were disappearing under wide, low-angle
+        // views instead of just fading into fog like the rest of it.
+        // far=600 clears that worst case with margin; fog (independent of
+        // this value, computed per-fragment from real world distance) still
+        // fades the far ground out naturally well before it, this only
+        // stops it from being hard-clipped before fog gets the chance to.
+        camera={{ position: [42, 34, 42], fov: 45, near: 1, far: 600 }}
         gl={{ antialias: true }}
       >
         <fogExp2 attach="fog" args={['#170a28', 0.007]} />

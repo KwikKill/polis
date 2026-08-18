@@ -23,6 +23,15 @@ const ROAD_COLOR = '#9d1fb8'
 // removal) — moving light instead of motionless "traffic."
 const ROAD_GLINT_COLOR = new THREE.Color(1.0, 0.55, 0.95)
 const ROAD_GLINT_SPEED = 6 // world units per second
+// Fixed real-world spacing between pulses, *not* each segment's own
+// length, a short segment used to complete its own full glint cycle much
+// quicker than a long one at the same world speed, reading as a faster
+// flicker purely because it was short, not because anything actually moved
+// faster. A fixed wavelength decouples the two: every segment just shows
+// whatever slice of one continuous, constant-speed traveling pattern
+// happens to overlap it, exactly matching planet-roads.tsx's own inter-city
+// version for a consistent feel across both scales.
+const ROAD_GLINT_WAVELENGTH = 26
 const ROAD_GLINT_WIDTH = 0.06
 const ROAD_GLINT_INTENSITY = 1.6
 
@@ -236,7 +245,8 @@ function RoadField({ roads, curvature }: { roads: Road[]; curvature?: SurfaceCur
             .replace(
               '#include <color_fragment>',
               `#include <color_fragment>
-              float roadGT = fract(vLocalZ + 0.5 + uTime * ${ROAD_GLINT_SPEED.toFixed(1)} / max(vLength, 0.5) + vPhase);
+              float roadWorldPos = (vLocalZ + 0.5) * vLength;
+              float roadGT = fract(roadWorldPos / ${ROAD_GLINT_WAVELENGTH.toFixed(1)} - uTime * ${ROAD_GLINT_SPEED.toFixed(1)} / ${ROAD_GLINT_WAVELENGTH.toFixed(1)} + vPhase);
               float roadGlint = 1.0 - smoothstep(0.0, ${ROAD_GLINT_WIDTH.toFixed(2)}, roadGT);
               diffuseColor.rgb += glintColor * roadGlint * ${ROAD_GLINT_INTENSITY.toFixed(1)};`,
             )
@@ -354,7 +364,23 @@ export default function Ground({
               metalness={0.4}
             />
           </mesh>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.015, 0]}>
+          {/* Sits at -0.008: a real 0.012-unit gap above the reflective
+              floor (-0.02) and a real 0.013-unit gap below the roads' own
+              lowest face (ROAD_Y - ROAD_HEIGHT/2 = 0.005) — both roughly
+              2.5x the original 0.005 gap that caused the floor z-fight, and
+              deliberately closer to the floor than to the roads so the
+              polygonOffset below only ever needs to win against the floor,
+              never risking an overshoot past the roads the way an earlier
+              -4/-4 factor did. `units` (not `factor`) bumped further than
+              that first correction: `units` scales with the depth buffer's
+              own locally-resolvable step, which grows non-linearly with
+              distance from the camera (see city-scene.tsx's near/far
+              comment) — a plain small offset that held up near the camera
+              stopped being enough once the camera moved far enough out,
+              and the grid visibly lost its z-fight against the floor
+              there. `factor` (slope-driven, the term responsible for the
+              earlier roads overshoot) stays untouched. */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.008, 0]}>
             <planeGeometry args={[500, 500]} />
             <shaderMaterial
               vertexShader={CITY_GRID_VERTEX}
@@ -362,6 +388,9 @@ export default function Ground({
               uniforms={cityGridUniforms}
               transparent
               depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-4}
               toneMapped={false}
             />
           </mesh>

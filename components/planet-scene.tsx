@@ -399,7 +399,7 @@ export default function PlanetScene({
               </div>
             ))}
 
-          {!devMode && !placementMode && activeIsOnPlanet && (
+          {explorable && !devMode && !placementMode && activeIsOnPlanet && (
             <button
               type="button"
               className="polis-btn pointer-events-auto"
