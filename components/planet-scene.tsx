@@ -482,9 +482,6 @@ export default function PlanetScene({
           this one size, no responsive variant to design for a first pass. */}
       {explorable && (
         <div className="polis-hud-panel pointer-events-none fixed bottom-24 left-6 z-10 hidden flex-col items-center gap-1 p-2 sm:flex">
-          <span className="font-display text-[0.62rem] uppercase tracking-widest text-foreground/50">
-            Radar
-          </span>
           <canvas
             ref={radarCanvasRef}
             style={{ width: RADAR_SIZE, height: RADAR_SIZE }}
