@@ -17,6 +17,14 @@ const MAX_WINDOW_COLS = 4
 const WINDOW_LIT_PROB_ACTIVE = 0.75
 const WINDOW_LIT_PROB_STALE = 0.1
 const WINDOW_COLOR = '#ffe3a8'
+// A cheap fake reflection tint, no cubemap/render target: a fresnel term
+// (view direction vs. the window's own world-space facing direction) mixed
+// with a cool tone, so glass brightens toward a grazing viewing angle
+// instead of always reading as a flat plane. A cool tint against the warm
+// interior glow reads as sky/exterior light bouncing off the pane.
+const WINDOW_REFLECTION_COLOR = '#7fa8ff'
+const WINDOW_REFLECTION_STRENGTH = 0.5
+const WINDOW_REFLECTION_POWER = 2.2
 // Only a minority of lit windows actually flicker (a hashed per-instance
 // amount, not a shared uniform pulse) — the rest stay steady, so it reads
 // as a few offices/apartments with a bad fixture rather than the whole
@@ -28,6 +36,29 @@ const WINDOW_FLICKER_SPEED = 2.0
 const ROOF_PROP_COLOR = '#342e40'
 const TIER_MIN_HEIGHT = 10 // only buildings at least this tall get a setback tier
 const TIER_PROBABILITY = 0.5
+
+// Body silhouette, most buildings stay a plain extruded box; a minority
+// get a tapered "spire" or a genuinely round tower instead, so the skyline
+// reads as more than one repeated shape. Landmarks are exempt (always
+// 'box') to keep the top-starred repos visually canonical against their
+// own beacon.
+type BodyVariant = 'box' | 'tower' | 'cylinder'
+const CYLINDER_PROBABILITY = 0.14
+const TOWER_PROBABILITY = 0.18
+// A second, smaller undecorated volume attached to one side of some
+// larger box-variant buildings, for an L-shaped footprint — only
+// considered for buildings at least this big on both axes, a tiny
+// building with a wing reads as clutter, not a footprint shape.
+const LWING_PROBABILITY = 0.35
+const LWING_MIN_SIZE = 3.4
+
+function pickBodyVariant(b: Building): BodyVariant {
+  if (b.landmark) return 'box'
+  const r = Math.random()
+  if (r < CYLINDER_PROBABILITY) return 'cylinder'
+  if (r < CYLINDER_PROBABILITY + TOWER_PROBABILITY) return 'tower'
+  return 'box'
+}
 
 interface BuildingFieldProps {
   buildings: Building[]
@@ -138,6 +169,71 @@ function shadedBoxGeometry(): THREE.BoxGeometry {
   return geo
 }
 
+// The generalized version of FACE_SHADE above for a geometry whose faces
+// aren't fixed to the six cardinal directions a box's are: a box's own
+// per-face-index brightness table already implicitly assumes a light from
+// roughly this same fixed direction, this derives the same effect from
+// each vertex's own normal instead, so it still works for a tapered or
+// round profile. Three.js's own primitive geometries (CylinderGeometry
+// included) already ship a correct 'normal' attribute at construction, no
+// computeVertexNormals() call needed here.
+const FAKE_LIGHT_DIR = new THREE.Vector3(0.45, 0.78, 0.44).normalize()
+const SHADE_MIN = 0.5
+const SHADE_MAX = 1.0
+
+function bakeLitVertexColors(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  const normal = geo.attributes.normal
+  const colors = new Float32Array(normal.count * 3)
+  const n = new THREE.Vector3()
+  for (let i = 0; i < normal.count; i++) {
+    n.set(normal.getX(i), normal.getY(i), normal.getZ(i))
+    const shade = SHADE_MIN + (SHADE_MAX - SHADE_MIN) * Math.max(0, (n.dot(FAKE_LIGHT_DIR) + 1) / 2)
+    colors[i * 3] = shade
+    colors[i * 3 + 1] = shade
+    colors[i * 3 + 2] = shade
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  return geo
+}
+
+// A tapered "spire" profile: a square-prism frustum narrower at the roof
+// than the base (radialSegments=4, rotated an eighth-turn so its flat
+// faces align with the +x/+z axes instead of meeting at a corner).
+//
+// CylinderGeometry's own `radius` argument is the *circumradius* out to
+// each of its radialSegments vertices, not the flat face's own
+// perpendicular distance from center — for a 4-sided prism with faces
+// rotated onto the axes, a face sits at `radius * cos(PI/4)` (≈0.71x),
+// not at `radius` itself, so passing 0.5 there (matching a unit box's own
+// half-width) rendered a body ~29% narrower than every consumer of
+// b.width/b.depth assumed, at every row from base to roof. Scaled up by
+// 1/cos(PI/4) here so the *rendered face* lands exactly at 0.5, matching
+// a box's own half-width convention (see buildWindows, which relies on
+// exactly that).
+const TOWER_TOP_FRACTION = 0.72
+const TOWER_APOTHEM_CORRECTION = 1 / Math.cos(Math.PI / 4)
+function shadedTowerGeometry(): THREE.BufferGeometry {
+  return bakeLitVertexColors(
+    new THREE.CylinderGeometry(
+      0.5 * TOWER_TOP_FRACTION * TOWER_APOTHEM_CORRECTION,
+      0.5 * TOWER_APOTHEM_CORRECTION,
+      1,
+      4,
+      1,
+      false,
+      Math.PI / 4,
+    ),
+  )
+}
+
+// A genuinely round tower, inscribed in the same (width, depth) footprint
+// every other body shape uses — a non-uniform width/depth scale turns the
+// circle into an ellipse, which reads as "round," not a bug.
+const CYLINDER_SEGMENTS = 14
+function shadedCylinderGeometry(): THREE.BufferGeometry {
+  return bakeLitVertexColors(new THREE.CylinderGeometry(0.5, 0.5, 1, CYLINDER_SEGMENTS))
+}
+
 const hslScratch = { h: 0, s: 0, l: 0 }
 
 // The "fluorescent toy block" look wasn't really a brightness problem,
@@ -159,7 +255,17 @@ function trimColor(b: Building): THREE.Color {
   return color.multiplyScalar(boost)
 }
 
-function buildWindows(buildings: Building[]): WindowInstance[] {
+// `taperTopFraction` matches shadedTowerGeometry's own top-radius fraction
+// (1 for a plain box, no taper at all): a tower's wall isn't at a constant
+// `b.width/2` from center the way a box's is, it narrows linearly toward
+// the roof, a fixed offset put every upper-row window floating outside the
+// actual (now narrower) body — visible even at typical building sizes, not
+// a subtle edge case. `widthAt(rowFrac)` gives each row's own true wall
+// half-width instead, both for how far out the window sits (the bug) and
+// for how its own column spread is laid out across that row's own width,
+// so nothing changes at all for a plain box (taperTopFraction=1 collapses
+// widthAt to a constant b.width, identical to the old fixed formula).
+function buildWindows(buildings: Building[], taperTopFraction = 1): WindowInstance[] {
   const windows: WindowInstance[] = []
   for (const b of buildings) {
     const rows = Math.min(MAX_WINDOW_ROWS, Math.max(1, Math.floor(b.height / WINDOW_ROW_SPACING)))
@@ -168,12 +274,14 @@ function buildWindows(buildings: Building[]): WindowInstance[] {
 
     for (const side of [1, -1]) {
       for (let r = 0; r < rows; r++) {
+        const rowFrac = (r + 0.5) / rows
+        const widthAtRow = b.width * (1 - rowFrac * (1 - taperTopFraction))
         for (let c = 0; c < cols; c++) {
           if (Math.random() > litProb) continue
           windows.push({
-            x: b.x + side * (b.width / 2 + 0.03),
-            y: ((r + 0.5) / rows) * b.height,
-            z: b.z + ((c + 0.5) / cols) * b.width - b.width / 2,
+            x: b.x + side * (widthAtRow / 2 + 0.03),
+            y: rowFrac * b.height,
+            z: b.z + ((c + 0.5) / cols) * widthAtRow - widthAtRow / 2,
             rotationY: side === 1 ? Math.PI / 2 : -Math.PI / 2,
             phase: Math.random() * Math.PI * 2,
             flicker:
@@ -191,14 +299,20 @@ function buildWindows(buildings: Building[]): WindowInstance[] {
 // AC units, tanks, vents, the rooftop clutter real buildings have instead
 // of a perfectly clean flat top. Neutral utility color, not tied to the
 // building's own language hue, since these read as infrastructure.
-function buildRoofProps(buildings: Building[]): RoofProp[] {
+// `taperTopFraction` (see buildWindows) — a tower's actual roof is
+// narrower than its base by this same fraction, jittering props across
+// the full base-width `usable` range would land some of them past the
+// real (narrower) rooftop's own edge, same "assumes a box footprint" bug
+// as the windows one, just for the roof clutter instead of the walls.
+function buildRoofProps(buildings: Building[], taperTopFraction = 1): RoofProp[] {
   const props: RoofProp[] = []
   for (const b of buildings) {
     if (b.landmark) continue // keep the beacon's roof clean
     const count = 1 + Math.floor(Math.random() * 3)
+    const roofWidth = b.width * taperTopFraction
     for (let i = 0; i < count; i++) {
       const margin = 0.3
-      const usable = Math.max(0.15, b.width - margin * 2)
+      const usable = Math.max(0.15, roofWidth - margin * 2)
       const sy = 0.15 + Math.random() * 0.3
       props.push({
         x: b.x + (Math.random() - 0.5) * usable,
@@ -237,8 +351,80 @@ function buildTiers(buildings: Building[]): Tier[] {
   return tiers
 }
 
+interface BoxVolume {
+  owner: Building
+  x: number
+  y: number
+  z: number
+  width: number
+  height: number
+  depth: number
+  color: THREE.Color
+}
+
+// One volume per box-variant building, plus a second smaller undecorated
+// "wing" volume on a minority of the bigger ones, attached flush against
+// one side, for an L-shaped footprint — reuses the same proven box
+// geometry/shading rather than hand-building a true extruded L outline,
+// the same "undecorated secondary volume" idea buildTiers already uses,
+// just offset to a side instead of stacked on top. `owner` carries the
+// wing back to its parent building for hover/click, a wing has no repo of
+// its own to open.
+function buildBoxVolumes(boxBuildings: Building[]): BoxVolume[] {
+  const volumes: BoxVolume[] = []
+  for (const b of boxBuildings) {
+    const color = bodyColor(b)
+    volumes.push({
+      owner: b,
+      x: b.x,
+      y: b.height / 2,
+      z: b.z,
+      width: b.width,
+      height: b.height,
+      depth: b.depth,
+      color,
+    })
+
+    const eligible = !b.landmark && b.width >= LWING_MIN_SIZE && b.depth >= LWING_MIN_SIZE
+    if (!eligible || Math.random() > LWING_PROBABILITY) continue
+
+    const dir = Math.floor(Math.random() * 4) // 0:+x 1:-x 2:+z 3:-z
+    const extendsAlongX = dir < 2
+    const spanMax = extendsAlongX ? b.depth : b.width
+    const wingProtrusion = (extendsAlongX ? b.width : b.depth) * (0.35 + Math.random() * 0.25)
+    const wingSpan = spanMax * (0.4 + Math.random() * 0.3)
+    const wingHeight = b.height * (0.4 + Math.random() * 0.4)
+    const overlap = 0.15 // slight overlap into the main volume, no seam
+    const jitter = (Math.random() * 2 - 1) * Math.max(0, (spanMax - wingSpan) / 2)
+
+    let wx = b.x
+    let wz = b.z
+    if (dir === 0) wx = b.x + b.width / 2 + wingProtrusion / 2 - overlap
+    else if (dir === 1) wx = b.x - b.width / 2 - wingProtrusion / 2 + overlap
+    else if (dir === 2) wz = b.z + b.depth / 2 + wingProtrusion / 2 - overlap
+    else wz = b.z - b.depth / 2 - wingProtrusion / 2 + overlap
+
+    if (extendsAlongX) wz += jitter
+    else wx += jitter
+
+    volumes.push({
+      owner: b,
+      x: wx,
+      y: wingHeight / 2,
+      z: wz,
+      width: extendsAlongX ? wingProtrusion : wingSpan,
+      height: wingHeight,
+      depth: extendsAlongX ? wingSpan : wingProtrusion,
+      color,
+    })
+  }
+  return volumes
+}
+
 export default function BuildingField({ buildings, onHover, onSelect, curvature }: BuildingFieldProps) {
   const mesh = useRef<THREE.InstancedMesh>(null!)
+  const towerMesh = useRef<THREE.InstancedMesh>(null!)
+  const cylinderMesh = useRef<THREE.InstancedMesh>(null!)
   const forkMesh = useRef<THREE.InstancedMesh>(null!)
   const trimMesh = useRef<THREE.InstancedMesh>(null!)
   const windowMesh = useRef<THREE.InstancedMesh>(null!)
@@ -247,25 +433,93 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
   const landmarkMesh = useRef<THREE.InstancedMesh>(null!)
 
   const bodyGeometry = useMemo(() => shadedBoxGeometry(), [])
+  const towerGeometry = useMemo(() => shadedTowerGeometry(), [])
+  const cylinderGeometry = useMemo(() => shadedCylinderGeometry(), [])
+
+  const variantByRepo = useMemo(() => {
+    const map = new Map<string, BodyVariant>()
+    for (const b of buildings) map.set(b.repoName, pickBodyVariant(b))
+    return map
+  }, [buildings])
+  const boxBuildings = useMemo(
+    () => buildings.filter((b) => variantByRepo.get(b.repoName) === 'box'),
+    [buildings, variantByRepo],
+  )
+  const towerBuildings = useMemo(
+    () => buildings.filter((b) => variantByRepo.get(b.repoName) === 'tower'),
+    [buildings, variantByRepo],
+  )
+  const cylinderBuildings = useMemo(
+    () => buildings.filter((b) => variantByRepo.get(b.repoName) === 'cylinder'),
+    [buildings, variantByRepo],
+  )
+  const boxVolumes = useMemo(() => buildBoxVolumes(boxBuildings), [boxBuildings])
+
   const landmarks = useMemo(() => buildings.filter((b) => b.landmark), [buildings])
   const forks = useMemo(() => buildings.filter((b) => b.fork), [buildings])
-  const windows = useMemo(() => buildWindows(buildings), [buildings])
-  const roofProps = useMemo(() => buildRoofProps(buildings), [buildings])
-  const tiers = useMemo(() => buildTiers(buildings), [buildings])
+  // Windows only make sense on a body with flat side walls — box and
+  // tower both qualify, a round cylinder's curved wall has no flat plane
+  // to place one on. The tower call passes its own TOWER_TOP_FRACTION so
+  // buildWindows can taper each row's placement to match (see its own
+  // comment) — the box call leaves it at the default (no taper).
+  const windows = useMemo(
+    () => [...buildWindows(boxBuildings), ...buildWindows(towerBuildings, TOWER_TOP_FRACTION)],
+    [boxBuildings, towerBuildings],
+  )
+  const roofProps = useMemo(
+    () => [
+      ...buildRoofProps(boxBuildings),
+      ...buildRoofProps(towerBuildings, TOWER_TOP_FRACTION),
+      ...buildRoofProps(cylinderBuildings),
+    ],
+    [boxBuildings, towerBuildings, cylinderBuildings],
+  )
+  const tiers = useMemo(() => buildTiers(boxBuildings), [boxBuildings])
 
   useLayoutEffect(() => {
-    if (!mesh.current) return
+    if (!mesh.current || boxVolumes.length === 0) return
     const dummy = new THREE.Object3D()
-    buildings.forEach((b, i) => {
-      placeDummy(dummy, b.x, b.height / 2, b.z, 0, curvature)
-      dummy.scale.set(b.width, b.height, b.depth)
+    boxVolumes.forEach((v, i) => {
+      placeDummy(dummy, v.x, v.y, v.z, 0, curvature)
+      dummy.scale.set(v.width, v.height, v.depth)
       dummy.updateMatrix()
       mesh.current.setMatrixAt(i, dummy.matrix)
-      mesh.current.setColorAt(i, bodyColor(b))
+      mesh.current.setColorAt(i, v.color)
     })
     mesh.current.instanceMatrix.needsUpdate = true
     if (mesh.current.instanceColor) mesh.current.instanceColor.needsUpdate = true
-  }, [buildings, curvature])
+  }, [boxVolumes, curvature])
+
+  // Tapered and round bodies each get their own instanced field, sized and
+  // colored exactly like a box body would be (same bodyColor, same
+  // per-building footprint), just a different base geometry.
+  useLayoutEffect(() => {
+    if (!towerMesh.current || towerBuildings.length === 0) return
+    const dummy = new THREE.Object3D()
+    towerBuildings.forEach((b, i) => {
+      placeDummy(dummy, b.x, b.height / 2, b.z, 0, curvature)
+      dummy.scale.set(b.width, b.height, b.depth)
+      dummy.updateMatrix()
+      towerMesh.current.setMatrixAt(i, dummy.matrix)
+      towerMesh.current.setColorAt(i, bodyColor(b))
+    })
+    towerMesh.current.instanceMatrix.needsUpdate = true
+    if (towerMesh.current.instanceColor) towerMesh.current.instanceColor.needsUpdate = true
+  }, [towerBuildings, curvature])
+
+  useLayoutEffect(() => {
+    if (!cylinderMesh.current || cylinderBuildings.length === 0) return
+    const dummy = new THREE.Object3D()
+    cylinderBuildings.forEach((b, i) => {
+      placeDummy(dummy, b.x, b.height / 2, b.z, 0, curvature)
+      dummy.scale.set(b.width, b.height, b.depth)
+      dummy.updateMatrix()
+      cylinderMesh.current.setMatrixAt(i, dummy.matrix)
+      cylinderMesh.current.setColorAt(i, bodyColor(b))
+    })
+    cylinderMesh.current.instanceMatrix.needsUpdate = true
+    if (cylinderMesh.current.instanceColor) cylinderMesh.current.instanceColor.needsUpdate = true
+  }, [cylinderBuildings, curvature])
 
   useLayoutEffect(() => {
     if (!forkMesh.current || forks.length === 0) return
@@ -279,11 +533,14 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
     forkMesh.current.instanceMatrix.needsUpdate = true
   }, [forks, curvature])
 
-  // Four thin glowing corner bars per building, the actual Tron-style
-  // "glowing edges on a dark volume" look; the body color alone (however
-  // bright) still reads as a flat box without this.
+  // Four thin glowing corner bars per box-variant building, the actual
+  // Tron-style "glowing edges on a dark volume" look; the body color alone
+  // (however bright) still reads as a flat box without this. Tapered and
+  // round bodies don't get one — a round tower has no corners, and a
+  // straight vertical bar at the tapered tower's full base width would
+  // visibly jut past its own narrower top.
   useLayoutEffect(() => {
-    if (!trimMesh.current || buildings.length === 0) return
+    if (!trimMesh.current || boxBuildings.length === 0) return
     const dummy = new THREE.Object3D()
     const corners: Array<[number, number]> = [
       [1, 1],
@@ -292,7 +549,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
       [-1, -1],
     ]
     let idx = 0
-    buildings.forEach((b) => {
+    boxBuildings.forEach((b) => {
       const color = trimColor(b)
       corners.forEach(([cx, cz]) => {
         placeDummy(dummy, b.x + (cx * b.width) / 2, b.height / 2, b.z + (cz * b.depth) / 2, 0, curvature)
@@ -305,7 +562,7 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
     })
     trimMesh.current.instanceMatrix.needsUpdate = true
     if (trimMesh.current.instanceColor) trimMesh.current.instanceColor.needsUpdate = true
-  }, [buildings, curvature])
+  }, [boxBuildings, curvature])
 
   useLayoutEffect(() => {
     if (!windowMesh.current || windows.length === 0) return
@@ -382,21 +639,58 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
     <>
       <instancedMesh
         ref={mesh}
-        args={[bodyGeometry, undefined, buildings.length]}
+        args={[bodyGeometry, undefined, boxVolumes.length]}
         onPointerMove={(e) => {
           e.stopPropagation()
-          if (e.instanceId != null) onHover(buildings[e.instanceId])
+          if (e.instanceId != null) onHover(boxVolumes[e.instanceId]?.owner ?? null)
         }}
         onPointerOut={() => onHover(null)}
         onClick={(e) => {
           e.stopPropagation()
-          if (e.instanceId != null) onSelect(buildings[e.instanceId])
+          const owner = e.instanceId != null ? boxVolumes[e.instanceId]?.owner : undefined
+          if (owner) onSelect(owner)
         }}
       >
         <meshBasicMaterial toneMapped={false} vertexColors />
       </instancedMesh>
 
-      <instancedMesh ref={trimMesh} args={[undefined, undefined, buildings.length * 4]}>
+      {towerBuildings.length > 0 && (
+        <instancedMesh
+          ref={towerMesh}
+          args={[towerGeometry, undefined, towerBuildings.length]}
+          onPointerMove={(e) => {
+            e.stopPropagation()
+            if (e.instanceId != null) onHover(towerBuildings[e.instanceId])
+          }}
+          onPointerOut={() => onHover(null)}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (e.instanceId != null) onSelect(towerBuildings[e.instanceId])
+          }}
+        >
+          <meshBasicMaterial toneMapped={false} vertexColors />
+        </instancedMesh>
+      )}
+
+      {cylinderBuildings.length > 0 && (
+        <instancedMesh
+          ref={cylinderMesh}
+          args={[cylinderGeometry, undefined, cylinderBuildings.length]}
+          onPointerMove={(e) => {
+            e.stopPropagation()
+            if (e.instanceId != null) onHover(cylinderBuildings[e.instanceId])
+          }}
+          onPointerOut={() => onHover(null)}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (e.instanceId != null) onSelect(cylinderBuildings[e.instanceId])
+          }}
+        >
+          <meshBasicMaterial toneMapped={false} vertexColors />
+        </instancedMesh>
+      )}
+
+      <instancedMesh ref={trimMesh} args={[undefined, undefined, boxBuildings.length * 4]}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial toneMapped={false} />
       </instancedMesh>
@@ -405,35 +699,49 @@ export default function BuildingField({ buildings, onHover, onSelect, curvature 
         <instancedMesh ref={windowMesh} args={[undefined, undefined, windows.length]}>
           <planeGeometry args={[1, 1]} />
           {/* A handful of windows dim and recover on a hashed sine phase
-              (aFlicker=0 for most, so they stay perfectly steady) — grafted
-              onto the stock material via onBeforeCompile rather than a full
-              custom shader, since everything else about a window (color,
-              double-sided plane) is still just meshBasicMaterial. */}
+              (aFlicker=0 for most, so they stay perfectly steady), plus a
+              fake fresnel reflection — both grafted onto the stock material
+              via onBeforeCompile rather than a full custom shader, since
+              everything else about a window (color, double-sided plane) is
+              still just meshBasicMaterial. The reflection reads the
+              instance's own world-space facing direction straight out of
+              `instanceMatrix` (already correctly baked with each window's
+              individual curvature tilt, see placeDummy) composed with
+              `modelMatrix`, both standard three.js built-ins, no extra
+              per-instance attribute needed for it. */}
           <meshBasicMaterial
             color={WINDOW_COLOR}
             toneMapped={false}
             side={THREE.DoubleSide}
             onBeforeCompile={(shader) => {
               shader.uniforms.uTime = { value: 0 }
+              shader.uniforms.reflectionColor = { value: new THREE.Color(WINDOW_REFLECTION_COLOR) }
               shader.vertexShader = shader.vertexShader
                 .replace(
                   '#include <common>',
-                  '#include <common>\nattribute float aPhase;\nattribute float aFlicker;\nvarying float vPhase;\nvarying float vFlicker;',
+                  '#include <common>\nattribute float aPhase;\nattribute float aFlicker;\nvarying float vPhase;\nvarying float vFlicker;\nvarying vec3 vNormalW;\nvarying vec3 vWorldPosW;',
                 )
                 .replace(
                   '#include <begin_vertex>',
-                  '#include <begin_vertex>\nvPhase = aPhase;\nvFlicker = aFlicker;',
+                  `#include <begin_vertex>
+                  vPhase = aPhase;
+                  vFlicker = aFlicker;
+                  vNormalW = normalize((modelMatrix * instanceMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz);
+                  vWorldPosW = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;`,
                 )
               shader.fragmentShader = shader.fragmentShader
                 .replace(
                   '#include <common>',
-                  '#include <common>\nuniform float uTime;\nvarying float vPhase;\nvarying float vFlicker;',
+                  '#include <common>\nuniform float uTime;\nuniform vec3 reflectionColor;\nvarying float vPhase;\nvarying float vFlicker;\nvarying vec3 vNormalW;\nvarying vec3 vWorldPosW;',
                 )
                 .replace(
                   '#include <color_fragment>',
                   `#include <color_fragment>
                   float windowFlickerFactor = 1.0 - vFlicker * (0.5 + 0.5 * sin(uTime * ${WINDOW_FLICKER_SPEED.toFixed(1)} + vPhase));
-                  diffuseColor.rgb *= windowFlickerFactor;`,
+                  diffuseColor.rgb *= windowFlickerFactor;
+                  vec3 windowViewDir = normalize(cameraPosition - vWorldPosW);
+                  float windowFresnel = pow(1.0 - clamp(abs(dot(normalize(vNormalW), windowViewDir)), 0.0, 1.0), ${WINDOW_REFLECTION_POWER.toFixed(1)});
+                  diffuseColor.rgb += reflectionColor * windowFresnel * ${WINDOW_REFLECTION_STRENGTH.toFixed(2)};`,
                 )
               windowShader.current = shader as unknown as { uniforms: { uTime: { value: number } } }
             }}

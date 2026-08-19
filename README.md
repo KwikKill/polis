@@ -318,3 +318,9 @@ Built and run via Docker (`Dockerfile`, `Dockerfile.dev` for local development),
 served behind nginx. Compose files for both the production and beta environments
 live at the repository root, alongside the shared `cert.sh` entry used to issue
 this site's TLS certificate.
+
+A `polis-cron` service (`polis/cron`, production compose file only) calls `POST
+/api/cities/refresh` every six hours over the internal `polis` Docker network,
+keeping published cities from going stale without any public endpoint or extra
+credentials, it reuses each owner's own stored GitHub OAuth token. Small dcron
+plus curl image, the same shape as the esport project's own cron container.

@@ -97,3 +97,30 @@ export async function devListUsernames(): Promise<string[]> {
   })
   return rows.map((r) => r.username)
 }
+
+// Same logic as POST /api/cities/refresh with an empty body (see app/api
+// /cities/refresh/route.ts, also what polis-cron calls every 6 hours in
+// production) — every city, reusing each owner's own stored GitHub OAuth
+// token. Exposed here as a plain server action instead of hitting that
+// route from the client: the route is guarded by REFRESH_SECRET, a real
+// server-only secret this dev button has no business knowing, calling the
+// same underlying logic directly sidesteps needing it at all, the same
+// reasoning devSignIn already applies to bypassing the OAuth round-trip.
+export async function devRefreshAllCities(): Promise<{ refreshed: number; failed: number }> {
+  assertDevMode()
+
+  const cities = await prisma.city.findMany({
+    include: { user: { include: { accounts: { where: { provider: 'github' } } } } },
+  })
+
+  const results = await Promise.allSettled(
+    cities.map((c) =>
+      generateAndSaveCity(c.userId, c.username, c.user.accounts[0]?.access_token ?? undefined),
+    ),
+  )
+
+  return {
+    refreshed: results.filter((r) => r.status === 'fulfilled').length,
+    failed: results.filter((r) => r.status === 'rejected').length,
+  }
+}

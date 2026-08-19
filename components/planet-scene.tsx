@@ -16,10 +16,12 @@ import PlanetCityPreview from '@/components/planet-city-preview'
 import PlanetClouds from '@/components/planet-clouds'
 import PlanetDataRings from '@/components/planet-data-rings'
 import PlanetDirectory from '@/components/planet-directory'
+import PlanetRadar, { RADAR_SIZE } from '@/components/planet-radar'
 import PlanetRoads from '@/components/planet-roads'
 import PlanetSky from '@/components/planet-sky'
 import PlanetSurface from '@/components/planet-surface'
 import { cityExtent, estimatePopulation } from '@/lib/city-builder'
+import { devRefreshAllCities } from '@/lib/dev-service'
 import { isValidPlacement, type PlacedCity, type Vec3 } from '@/lib/planet-builder'
 import { devSetCityPosition, relocateCity, type DevCity } from '@/lib/planet-service'
 import type { Building, PlanetCity as PlanetCityData, PlanetRoad } from '@/lib/types'
@@ -71,10 +73,17 @@ export default function PlanetScene({
   const [previewValid, setPreviewValid] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  // Separate from `pending`/startTransition above (placement confirm) so a
+  // refresh in progress doesn't show a stray "Saving…" on the placement
+  // flow's own button, or vice versa — the two are unrelated actions that
+  // can each be in flight independently.
+  const [refreshPending, startRefreshTransition] = useTransition()
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null)
   const [flyToCity, setFlyToCity] = useState<PlanetCityData | null>(null)
   const [focusedUsername, setFocusedUsername] = useState<string | null>(null)
   const [returnRequestId, setReturnRequestId] = useState(0)
   const controlsRef = useRef<OrbitControlsLike | null>(null)
+  const radarCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   // In dev mode, the "active" city being placed/moved is whichever one the
   // dev picker below has selected, standing in for the normal "only your
@@ -182,6 +191,24 @@ export default function PlanetScene({
     setError(null)
   }
 
+  // Same underlying refresh POST /api/cities/refresh (and polis-cron)
+  // both call, exposed as a plain server action here so this dev-only
+  // button doesn't need the REFRESH_SECRET the real route is guarded by
+  // (see lib/dev-service.ts's devRefreshAllCities).
+  function refreshAllCities() {
+    if (refreshPending) return
+    setRefreshMessage(null)
+    startRefreshTransition(async () => {
+      const result = await devRefreshAllCities()
+      setRefreshMessage(
+        result.failed > 0
+          ? `Refreshed ${result.refreshed}, ${result.failed} failed`
+          : `Refreshed ${result.refreshed} cities`,
+      )
+      router.refresh()
+    })
+  }
+
   function visitCity(city: PlanetCityData) {
     setFocusedUsername(city.username)
     setFlyToCity(city)
@@ -272,6 +299,10 @@ export default function PlanetScene({
         <PlanetDataRings radius={radius} />
 
         <PlanetRoads roads={roads} />
+
+        {explorable && (
+          <PlanetRadar cities={cities} canvasRef={radarCanvasRef} focusedUsername={focusedUsername} />
+        )}
 
         {cities.map((city) => (
           <PlanetCity
@@ -376,6 +407,17 @@ export default function PlanetScene({
                   {activeIsOnPlanet ? 'Move this city' : 'Place this city'}
                 </button>
               )}
+              <button
+                type="button"
+                className="polis-btn"
+                disabled={refreshPending}
+                onClick={refreshAllCities}
+              >
+                {refreshPending ? 'Refreshing…' : 'Refresh all cities'}
+              </button>
+              {refreshMessage && (
+                <span className="text-xs text-foreground/60">{refreshMessage}</span>
+              )}
             </div>
           )}
 
@@ -432,6 +474,23 @@ export default function PlanetScene({
 
       {explorable && (
         <PlanetDirectory cities={cities} focusedUsername={focusedUsername} onSelect={visitCity} />
+      )}
+
+      {/* Desktop only, like the directory panel it mirrors — a fixed
+          RADAR_SIZE canvas is a meaningful chunk of a phone screen, and
+          the drawing itself (see planet-radar.tsx) already reads fine at
+          this one size, no responsive variant to design for a first pass. */}
+      {explorable && (
+        <div className="polis-hud-panel pointer-events-none fixed bottom-24 left-6 z-10 hidden flex-col items-center gap-1 p-2 sm:flex">
+          <span className="font-display text-[0.62rem] uppercase tracking-widest text-foreground/50">
+            Radar
+          </span>
+          <canvas
+            ref={radarCanvasRef}
+            style={{ width: RADAR_SIZE, height: RADAR_SIZE }}
+            aria-hidden="true"
+          />
+        </div>
       )}
 
       <Footer />

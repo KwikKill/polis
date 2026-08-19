@@ -4,6 +4,7 @@ import { OrbitControls } from '@react-three/drei'
 import { Canvas } from '@react-three/fiber'
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { useRef, useState } from 'react'
+import AtmosphereParticles from '@/components/atmosphere-particles'
 import BuildingField from '@/components/building-field'
 import CitySky from '@/components/city-sky'
 import Footer from '@/components/footer'
@@ -70,6 +71,7 @@ export default function CityScene({
 
         <CitySky />
         <Ground roads={city.roads} />
+        <AtmosphereParticles />
         <BuildingField
           buildings={city.buildings}
           onHover={setHovered}
